@@ -1,6 +1,20 @@
 #include "raylib.h"
 
-enum gameState { PLAYING, INVENTORY, MAP }
+struct GameStructure {
+    enum gameState { PLAYING, INVENTORY, MAP }
+    struct WindowConfig {
+        const int Width = 1280;
+        const int Height = 960;
+    };
+    WindowConfig screen;
+};
+GameStructure GAME;
+
+struct Players {
+    int speed = 5;
+    Vector2 position = {GAME.screen.Width/2, GAME.screen.Height/2};
+};
+Players player;
 
 enum enemyState { ROAMING, SEARCHING, ATTACKING}
 struct Enemy {
@@ -17,17 +31,13 @@ struct Enemy {
 int main() {
 
     // Initialization
-    //--------------------------------------------------------------------------------------
-    const int screenWidth = 800;
-    const int screenHeight = 600;
+    //-------------------------------------------------------------------------------------
+    // variables
 
-    int playerSpeed = 3;
 
-    InitWindow(screenWidth, screenHeight, "RogueLike");
-
-    Vector2 playerPosition = {screenWidth/2, screenHeight/2};
-
+    InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
+    SetExitKey(KEY_NULL);           // Retira o ESC como tecla de fechar o jogo
     //--------------------------------------------------------------------------------------
 
     // Main game loop
@@ -36,10 +46,23 @@ int main() {
         // Update
         //----------------------------------------------------------------------------------
         // TODO: Update your variables here
-        if (IsKeyDown(KEY_RIGHT)) playerPosition.x += playerSpeed;
-        if (IsKeyDown(KEY_LEFT)) playerPosition.x -= playerSpeed;
-        if (IsKeyDown(KEY_UP)) playerPosition.y -= playerSpeed;
-        if (IsKeyDown(KEY_DOWN)) playerPosition.y += playerSpeed;
+        if (IsKeyDown(KEY_D)) {
+            if (player.position.x + player.speed <= GAME.screen.Width - 30)
+                player.position.x += player.speed;
+        }
+        if (IsKeyDown(KEY_A)) {
+            if (player.position.x - player.speed >= 0)
+                player.position.x -= player.speed;
+        }
+        if (IsKeyDown(KEY_W)) {
+            if (player.position.y - player.speed >= -10)
+                player.position.y -= player.speed;
+        }
+        if (IsKeyDown(KEY_S)) {
+            if (player.position.y + player.speed <= GAME.screen.Height - 35)
+                player.position.y += player.speed;
+        }
+      
         if (IsKeyPressed(KEY_TAB)) {
             if (gameState == JOGANDO) gameState = INVENTORY;
             else if (gameState == INVENTORY) gameState = JOGANDO;
@@ -56,7 +79,7 @@ int main() {
         //----------------------------------------------------------------------------------
         BeginDrawing();
         ClearBackground(BLACK);
-        DrawText("@", playerPosition.x, playerPosition.y, 40, RAYWHITE);
+        DrawText("@", player.position.x, player.position.y, 40, RAYWHITE);
         EndDrawing();
     }
 
