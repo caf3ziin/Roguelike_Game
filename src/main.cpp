@@ -1,6 +1,16 @@
 #include "raylib.h"
 
+enum gameState { PLAYING, INVENTORY, MAP }
 
+enum enemyState { ROAMING, SEARCHING, ATTACKING}
+struct Enemy {
+    int healthPoints = 50;
+    int powerPoints = 5;
+    int attackRange = 5;
+
+}
+
+// raylib.com
 //------------------------------------------------------------------------------------
 // Program main entry point
 //------------------------------------------------------------------------------------
@@ -13,7 +23,7 @@ int main() {
 
     int playerSpeed = 3;
 
-    InitWindow(screenWidth, screenHeight, "raylib [core] example - basic window");
+    InitWindow(screenWidth, screenHeight, "RogueLike");
 
     Vector2 playerPosition = {screenWidth/2, screenHeight/2};
 
@@ -30,6 +40,16 @@ int main() {
         if (IsKeyDown(KEY_LEFT)) playerPosition.x -= playerSpeed;
         if (IsKeyDown(KEY_UP)) playerPosition.y -= playerSpeed;
         if (IsKeyDown(KEY_DOWN)) playerPosition.y += playerSpeed;
+        if (IsKeyPressed(KEY_TAB)) {
+            if (gameState == JOGANDO) gameState = INVENTORY;
+            else if (gameState == INVENTORY) gameState = JOGANDO;
+            else if (gameState == MAP) gameState = MAP;        
+        }
+        if (isKeyPressed(KEY_M))
+            if (gameState == JOGANDO) gameState = MAP;
+            else if (gameState == INVENTORY) gameState = MAP;
+            else if (gameState == MAP) gameState = JOGANDO;   
+        if (IsKeyPressd(KEY_ESCAPE)) gameState = JOGANDO
         //----------------------------------------------------------------------------------
 
         // Draw
