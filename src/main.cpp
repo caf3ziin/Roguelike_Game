@@ -1,7 +1,8 @@
 #include "raylib.h"
+enum GameState { PLAYING, INVENTORY, MAP };
 
 struct GameStructure {
-    enum gameState { PLAYING, INVENTORY, MAP }
+    GameState gameState = PLAYING;
     struct WindowConfig {
         const int Width = 1280;
         const int Height = 960;
@@ -16,13 +17,13 @@ struct Players {
 };
 Players player;
 
-enum enemyState { ROAMING, SEARCHING, ATTACKING}
+enum enemyState { ROAMING, SEARCHING, ATTACKING};
 struct Enemy {
     int healthPoints = 50;
     int powerPoints = 5;
     int attackRange = 5;
 
-}
+};
 
 // raylib.com
 //------------------------------------------------------------------------------------
@@ -64,15 +65,15 @@ int main() {
         }
       
         if (IsKeyPressed(KEY_TAB)) {
-            if (gameState == JOGANDO) gameState = INVENTORY;
-            else if (gameState == INVENTORY) gameState = JOGANDO;
-            else if (gameState == MAP) gameState = MAP;        
+            if (GAME.gameState == GameState::PLAYING) GAME.gameState = GameState::INVENTORY;
+            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::PLAYING;
+            else if (GAME.gameState == MAP) GAME.gameState = GameState::MAP;        
         }
-        if (isKeyPressed(KEY_M))
-            if (gameState == JOGANDO) gameState = MAP;
-            else if (gameState == INVENTORY) gameState = MAP;
-            else if (gameState == MAP) gameState = JOGANDO;   
-        if (IsKeyPressd(KEY_ESCAPE)) gameState = JOGANDO
+        if (IsKeyPressed(KEY_M))
+            if (GAME.gameState == GameState::PLAYING) GAME.gameState = MAP;
+            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::MAP;
+            else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;   
+        if (IsKeyPressed(KEY_ESCAPE)) GAME.gameState = GameState::PLAYING;
         //----------------------------------------------------------------------------------
 
         // Draw
