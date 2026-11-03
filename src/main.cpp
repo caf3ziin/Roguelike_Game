@@ -1,6 +1,7 @@
 #include "raylib.h"
 
 struct GameStructure {
+    enum gameState { PLAYING, INVENTORY, MAP }
     struct WindowConfig {
         const int Width = 1280;
         const int Height = 960;
@@ -15,17 +16,26 @@ struct Players {
 };
 Players player;
 
+enum enemyState { ROAMING, SEARCHING, ATTACKING}
+struct Enemy {
+    int healthPoints = 50;
+    int powerPoints = 5;
+    int attackRange = 5;
+
+}
+
+// raylib.com
 //------------------------------------------------------------------------------------
 // Program main entry point
 //------------------------------------------------------------------------------------
 int main() {
 
     // Initialization
-    //--------------------------------------------------------------------------------------
+    //-------------------------------------------------------------------------------------
     // variables
 
 
-    InitWindow(GAME.screen.Width, GAME.screen.Height, "raylib [core] example - basic window");
+    InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
     SetExitKey(KEY_NULL);           // Retira o ESC como tecla de fechar o jogo
     //--------------------------------------------------------------------------------------
@@ -52,6 +62,17 @@ int main() {
             if (player.position.y + player.speed <= GAME.screen.Height - 35)
                 player.position.y += player.speed;
         }
+      
+        if (IsKeyPressed(KEY_TAB)) {
+            if (gameState == JOGANDO) gameState = INVENTORY;
+            else if (gameState == INVENTORY) gameState = JOGANDO;
+            else if (gameState == MAP) gameState = MAP;        
+        }
+        if (isKeyPressed(KEY_M))
+            if (gameState == JOGANDO) gameState = MAP;
+            else if (gameState == INVENTORY) gameState = MAP;
+            else if (gameState == MAP) gameState = JOGANDO;   
+        if (IsKeyPressd(KEY_ESCAPE)) gameState = JOGANDO
         //----------------------------------------------------------------------------------
 
         // Draw
