@@ -40,8 +40,15 @@ int main() {
 
     // Initialization
     //-------------------------------------------------------------------------------------
-    // variables
+    InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");
+    SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
+    SetExitKey(KEY_NULL);           // Retira o ESC como tecla de fechar o jogo
 
+
+    //-------------------------------------------------------------------------------------
+    // variables
+    Texture2D background = LoadTexture("resources/grassBackground.png");
+    SetTextureWrap(background, TEXTURE_WRAP_REPEAT);
     Camera2D camera = {0};
 
     camera.target = (Vector2){player.position.x, player.position.y};
@@ -49,9 +56,6 @@ int main() {
     camera.rotation = 0.0f;
     camera.zoom = 1.0f;
 
-    InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");
-    SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
-    SetExitKey(KEY_NULL);           // Retira o ESC como tecla de fechar o jogo
     //--------------------------------------------------------------------------------------
 
     // Main game loop
@@ -98,17 +102,14 @@ int main() {
             ClearBackground(BLACK);
 
             BeginMode2D(camera);
-                {
-                    int tempSpacingX = 100, tempSpacingY = 100, scenaryRectanglesAmount = 100;
-                    for (int i = 0; i < scenaryRectanglesAmount; i++) {
-                        DrawRectangle(tempSpacingX, tempSpacingY, 100, 100, GREEN);
-                        if (tempSpacingX < GAME.world.Width) tempSpacingX += 300;
-                        else {
-                            tempSpacingX = 50;
-                            tempSpacingY += 400;
-                        }
-                    }
-                }
+                DrawTexturePro(
+                    background,
+                    (Rectangle){ 0, 0, (float)GAME.world.Width, (float)GAME.world.Height },  // pedaço da textura
+                    (Rectangle){ 0, 0, (float)GAME.world.Width, (float)GAME.world.Height },  // onde vai no mundo
+                    (Vector2){ 0, 0 },
+                    0.0f,
+                    WHITE
+                );
                 DrawText("@", player.position.x, player.position.y, 40, RAYWHITE);
             EndMode2D();
         EndDrawing();
