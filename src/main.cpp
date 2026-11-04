@@ -1,13 +1,21 @@
 #include "raylib.h"
+#include "test.h"
+
 enum GameState { PLAYING, INVENTORY, MAP };
 
 struct GameStructure {
     GameState gameState = PLAYING;
     struct WindowConfig {
         const int Width = 1280;
-        const int Height = 960;
+        const int Height = 720;
     };
     WindowConfig screen;
+
+    struct WorldConfig {
+        const int Width = 3000;
+        const int Height = 3000;
+    };
+    WorldConfig world;
 };
 GameStructure GAME;
 
@@ -34,7 +42,14 @@ int main() {
     // Initialization
     //-------------------------------------------------------------------------------------
     // variables
+    printingFunction();
 
+    Camera2D camera = {0};
+
+    camera.target = (Vector2){player.position.x, player.position.y};
+    camera.offset = (Vector2){GAME.screen.Width/2.0f, GAME.screen.Height/2.0f};
+    camera.rotation = 0.0f;
+    camera.zoom = 1.0f;
 
     InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
@@ -48,7 +63,7 @@ int main() {
         //----------------------------------------------------------------------------------
         // TODO: Update your variables here
         if (IsKeyDown(KEY_D)) {
-            if (player.position.x + player.speed <= GAME.screen.Width - 30)
+            if (player.position.x + player.speed <= GAME.world.Width)
                 player.position.x += player.speed;
         }
         if (IsKeyDown(KEY_A)) {
@@ -56,11 +71,11 @@ int main() {
                 player.position.x -= player.speed;
         }
         if (IsKeyDown(KEY_W)) {
-            if (player.position.y - player.speed >= -10)
+            if (player.position.y - player.speed >= 0)
                 player.position.y -= player.speed;
         }
         if (IsKeyDown(KEY_S)) {
-            if (player.position.y + player.speed <= GAME.screen.Height - 35)
+            if (player.position.y + player.speed <= GAME.world.Height)
                 player.position.y += player.speed;
         }
       
@@ -74,13 +89,30 @@ int main() {
             else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::MAP;
             else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;   
         if (IsKeyPressed(KEY_ESCAPE)) GAME.gameState = GameState::PLAYING;
+
+        camera.target = (Vector2){player.position.x, player.position.y};
+
         //----------------------------------------------------------------------------------
 
         // Draw
         //----------------------------------------------------------------------------------
         BeginDrawing();
-        ClearBackground(BLACK);
-        DrawText("@", player.position.x, player.position.y, 40, RAYWHITE);
+            ClearBackground(BLACK);
+
+            BeginMode2D(camera);
+                {
+                    int tempSpacingX = 100, tempSpacingY = 100, scenaryRectanglesAmount = 100;
+                    for (int i = 0; i < scenaryRectanglesAmount; i++) {
+                        DrawRectangle(tempSpacingX, tempSpacingY, 100, 100, GREEN);
+                        if (tempSpacingX < GAME.world.Width) tempSpacingX += 300;
+                        else {
+                            tempSpacingX = 50;
+                            tempSpacingY += 400;
+                        }
+                    }
+                }
+                DrawText("@", player.position.x, player.position.y, 40, RAYWHITE);
+            EndMode2D();
         EndDrawing();
     }
 
