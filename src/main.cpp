@@ -1,5 +1,4 @@
 #include "raylib.h"
-#include "test.h"
 
 enum GameState { PLAYING, INVENTORY, MAP };
 
@@ -42,7 +41,6 @@ int main() {
     // Initialization
     //-------------------------------------------------------------------------------------
     // variables
-    printingFunction();
 
     Camera2D camera = {0};
 
