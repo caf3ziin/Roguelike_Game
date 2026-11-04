@@ -1,10 +1,27 @@
 #include "raylib.h"
 #include "raymath.h"
+#include <vector>
 
 enum GameState { PLAYING, INVENTORY, MAP };
+enum enemyState { ROAMING, SEARCHING, ATTACKING};
+
+struct Projectile {
+    Vector2 position;
+    Vector2 direction;
+    float speed, screenTime;
+    int damage;
+};
+
+struct Enemy {
+    int healthPoints = 50;
+    int powerPoints = 5;
+    int attackRange = 5;
+
+};
 
 struct GameStructure {
     GameState gameState = PLAYING;
+
     struct WindowConfig {
         const int Width = 1280;
         const int Height = 720;
@@ -18,6 +35,9 @@ struct GameStructure {
         const Vector2 Center = {Width/2.0f, Height/2.0f};
     };
     WorldConfig world;
+
+    std::vector<Projectile> projectiles;
+    std::vector<Enemy> enemies;
 };
 GameStructure GAME;
 
@@ -27,13 +47,20 @@ struct Players {
 };
 Players player;
 
-enum enemyState { ROAMING, SEARCHING, ATTACKING};
-struct Enemy {
-    int healthPoints = 50;
-    int powerPoints = 5;
-    int attackRange = 5;
 
-};
+/*
+    TODO:
+        - Colisão das balas
+        - Geração de inimigos
+        - IA dos inimigos
+        - sistema de vida e dano do player
+        - Sistema de itens
+        - pegar sprites para o player, cenário, inimigos, projéteis, etc
+        - criar diferentes tipos de projéteis
+        - criar armas corpo a corpo
+        - criar a geração de fases do mundo
+*/
+
 
 // raylib.com
 //------------------------------------------------------------------------------------
@@ -66,7 +93,8 @@ int main() {
 
         // Update
         //----------------------------------------------------------------------------------
-        // TODO: Update your variables here
+        // Update your variables here
+
         if (IsKeyDown(KEY_D)) {
             if (player.position.x + player.speed <= GAME.world.Width)
                 player.position.x += player.speed;
@@ -95,9 +123,34 @@ int main() {
             else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;   
         if (IsKeyPressed(KEY_ESCAPE)) GAME.gameState = GameState::PLAYING;
 
-        Vector2 mousePos = GetMousePosition();
+        Vector2 mouseScreen = GetMousePosition();
+        Vector2 mouseWorld = GetScreenToWorld2D(mouseScreen, camera);
+
+        if (IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.position));
+
+            GAME.projectiles.push_back({
+                player.position,
+                direction,
+                10.0f,
+                0,
+                0
+            });
+        }
 
         camera.target = (Vector2){player.position.x, player.position.y};
+
+        for (int i = (int)GAME.projectiles.size() - 1; i >= 0; i--) {
+            Projectile& bullet = GAME.projectiles[i];
+            
+            bullet.screenTime += GetFrameTime();
+            if (bullet.screenTime > 5.0f) {
+                GAME.projectiles.erase(GAME.projectiles.begin() + i);
+                continue;
+            }
+
+            bullet.position = Vector2Add(bullet.position, Vector2Scale(bullet.direction, bullet.speed));
+        }
 
         //----------------------------------------------------------------------------------
 
@@ -116,9 +169,16 @@ int main() {
                     WHITE
                 );
                 DrawText("@", player.position.x - 15, player.position.y - 20, 40, RAYWHITE);
+
+                if (!GAME.projectiles.empty()) {
+                    for (const auto bullet : GAME.projectiles) {
+                        Rectangle bulletSprite = {bullet.position.x, bullet.position.y, 8.0f, 4.0f};
+                        DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
+                    }
+                }
             EndMode2D();
 
-            DrawLineV(GAME.screen.Center, mousePos, RED);
+            DrawLineV(GAME.screen.Center, mouseScreen, RED);
         EndDrawing();
     }
 
