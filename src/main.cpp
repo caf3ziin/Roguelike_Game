@@ -13,7 +13,7 @@ GameStructure GAME;
 
 struct Players {
     int speed = 5;
-    Vector2 position = {GAME.screen.Width/2, GAME.screen.Height/2};
+    Vector2 position = {GAME.screen.Width/2.0f, GAME.screen.Height/2.0f};
 };
 Players player;
 
