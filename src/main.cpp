@@ -1,4 +1,5 @@
 #include "raylib.h"
+#include "raymath.h"
 
 enum GameState { PLAYING, INVENTORY, MAP };
 
@@ -7,12 +8,14 @@ struct GameStructure {
     struct WindowConfig {
         const int Width = 1280;
         const int Height = 720;
+        const Vector2 Center = {Width/2.0f, Height/2.0f};
     };
     WindowConfig screen;
 
     struct WorldConfig {
         const int Width = 3000;
         const int Height = 3000;
+        const Vector2 Center = {Width/2.0f, Height/2.0f};
     };
     WorldConfig world;
 };
@@ -20,7 +23,7 @@ GameStructure GAME;
 
 struct Players {
     int speed = 5;
-    Vector2 position = {GAME.screen.Width/2.0f, GAME.screen.Height/2.0f};
+    Vector2 position = GAME.world.Center;
 };
 Players player;
 
@@ -52,7 +55,7 @@ int main() {
     Camera2D camera = {0};
 
     camera.target = (Vector2){player.position.x, player.position.y};
-    camera.offset = (Vector2){GAME.screen.Width/2.0f, GAME.screen.Height/2.0f};
+    camera.offset = GAME.screen.Center;
     camera.rotation = 0.0f;
     camera.zoom = 1.0f;
 
@@ -92,6 +95,8 @@ int main() {
             else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;   
         if (IsKeyPressed(KEY_ESCAPE)) GAME.gameState = GameState::PLAYING;
 
+        Vector2 mousePos = GetMousePosition();
+
         camera.target = (Vector2){player.position.x, player.position.y};
 
         //----------------------------------------------------------------------------------
@@ -110,8 +115,10 @@ int main() {
                     0.0f,
                     WHITE
                 );
-                DrawText("@", player.position.x, player.position.y, 40, RAYWHITE);
+                DrawText("@", player.position.x - 15, player.position.y - 20, 40, RAYWHITE);
             EndMode2D();
+
+            DrawLineV(GAME.screen.Center, mousePos, RED);
         EndDrawing();
     }
 
