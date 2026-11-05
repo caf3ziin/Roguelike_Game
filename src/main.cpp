@@ -1,5 +1,7 @@
 #include "raylib.h"
 #include "raymath.h"
+#include "test.h"
+#include <vector>
 #include <random>
 
 using namespace std;
@@ -8,26 +10,15 @@ random_device rd;
 mt19937 gen(rd()); 
 
 enum GameState { PLAYING, INVENTORY, MAP };
-
-struct GameStructure {
-    GameState gameState = PLAYING;
-    struct WindowConfig {
-        const int Width = 1280;
-        const int Height = 960;
-    };
-    WindowConfig screen;
-};
-
-GameStructure GAME;
-
-struct Players {
-    int speed = 5;
-    Vector2 position = {GAME.screen.Width/2, GAME.screen.Height/2};
-};
-
-Players player;
-
 enum enemyState { ROAMING, SEARCHING, ATTACKING};
+
+struct Projectile {
+    Vector2 position;
+    Vector2 direction;
+    float speed, screenTime;
+    int damage;
+};
+
 struct Enemy {
     int healthPoints = 50;
     int powerPoints = 5;
@@ -35,8 +26,52 @@ struct Enemy {
     int speed = 2;
 
     Vector2 position;
-
 };
+
+struct GameStructure {
+    GameState gameState = PLAYING;
+
+    struct WindowConfig {
+        const int Width = 1280;
+        const int Height = 720;
+        const Vector2 Center = {Width/2.0f, Height/2.0f};
+    };
+    WindowConfig screen;
+
+    struct WorldConfig {
+        const int Width = 3000;
+        const int Height = 3000;
+        const Vector2 Center = {Width/2.0f, Height/2.0f};
+    };
+    WorldConfig world;
+
+    std::vector<Projectile> projectiles;
+    std::vector<Enemy> enemies;
+};
+
+GameStructure GAME;
+
+struct Players {
+    int speed = 5;
+    Vector2 position = GAME.world.Center;
+};
+
+Players player;
+
+
+/*
+    TODO:
+        - Colisão das balas
+        - Geração de inimigos
+        - IA dos inimigos
+        - sistema de vida e dano do player
+        - Sistema de itens
+        - pegar sprites para o player, cenário, inimigos, projéteis, etc
+        - criar diferentes tipos de projéteis
+        - criar armas corpo a corpo
+        - criar a geração de fases do mundo
+*/
+
 
 // raylib.com
 //------------------------------------------------------------------------------------
@@ -79,15 +114,27 @@ int main() {
     const int enemiesAmount = 20;
     Enemy enemy[enemiesAmount];
 
-        // Initialization
+    printingFunctionTEST();
+    
+    // Initialization
     //-------------------------------------------------------------------------------------
-    // variables
-
-
     InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
     SetExitKey(KEY_NULL);           // Retira o ESC como tecla de fechar o jogo
     createEnemies(enemy, enemiesAmount);
+
+
+    //-------------------------------------------------------------------------------------
+    // variables
+    Texture2D background = LoadTexture("resources/grassBackground.png");
+    SetTextureWrap(background, TEXTURE_WRAP_REPEAT);
+    Camera2D camera = {0};
+
+    camera.target = (Vector2){player.position.x, player.position.y};
+    camera.offset = GAME.screen.Center;
+    camera.rotation = 0.0f;
+    camera.zoom = 1.0f;
+
     //--------------------------------------------------------------------------------------
 
     // Main game loop
@@ -96,48 +143,108 @@ int main() {
 
         // Update
         //----------------------------------------------------------------------------------
-        // TODO: Update your variables here
-        if (IsKeyDown(KEY_D)) {
-            if (player.position.x + player.speed <= GAME.screen.Width - 30)
-                player.position.x += player.speed;
+        // Update your variables here
+        if (GAME.gameState == PLAYING) {
+            if (IsKeyDown(KEY_D)) {
+                if (player.position.x + player.speed <= GAME.world.Width)
+                    player.position.x += player.speed;
+            }
+            if (IsKeyDown(KEY_A)) {
+                if (player.position.x - player.speed >= 0)
+                    player.position.x -= player.speed;
+            }
+            if (IsKeyDown(KEY_W)) {
+                if (player.position.y - player.speed >= 0)
+                    player.position.y -= player.speed;
+            }
+            if (IsKeyDown(KEY_S)) {
+                if (player.position.y + player.speed <= GAME.world.Height)
+                    player.position.y += player.speed;
+            }
         }
-        if (IsKeyDown(KEY_A)) {
-            if (player.position.x - player.speed >= 0)
-                player.position.x -= player.speed;
-        }
-        if (IsKeyDown(KEY_W)) {
-            if (player.position.y - player.speed >= -10)
-                player.position.y -= player.speed;
-        }
-        if (IsKeyDown(KEY_S)) {
-            if (player.position.y + player.speed <= GAME.screen.Height - 35)
-                player.position.y += player.speed;
-        }
-      
+
         if (IsKeyPressed(KEY_TAB)) {
             if (GAME.gameState == GameState::PLAYING) GAME.gameState = GameState::INVENTORY;
-            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::PLAYING;
-            else if (GAME.gameState == MAP) GAME.gameState = GameState::MAP;        
+            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::PLAYING;      
         }
         if (IsKeyPressed(KEY_M))
-            if (GAME.gameState == GameState::PLAYING) GAME.gameState = MAP;
-            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::MAP;
+            if (GAME.gameState == GameState::PLAYING || GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::MAP;
             else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;   
         if (IsKeyPressed(KEY_ESCAPE)) GAME.gameState = GameState::PLAYING;
-
+        
         for (int i = 0; i < enemiesAmount; i++) {
             enemyMovement(enemy[i]);
         }
+
+        Vector2 mouseScreen = GetMousePosition();
+        Vector2 mouseWorld = GetScreenToWorld2D(mouseScreen, camera);
+
+        camera.target = (Vector2){player.position.x, player.position.y};
+
+        if (GAME.gameState == PLAYING) {
+            if (IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.position));
+
+                GAME.projectiles.push_back({
+                    player.position,
+                    direction,
+                    10.0f,
+                    0,
+                    0
+                });
+            }
+
+            for (int i = (int)GAME.projectiles.size() - 1; i >= 0; i--) {
+                Projectile& bullet = GAME.projectiles[i];
+                
+                bullet.screenTime += GetFrameTime();
+                if (bullet.screenTime > 5.0f) {
+                    GAME.projectiles.erase(GAME.projectiles.begin() + i);
+                    continue;
+                }
+
+                bullet.position = Vector2Add(bullet.position, Vector2Scale(bullet.direction, bullet.speed));
+            }
+        }
+
         //----------------------------------------------------------------------------------
 
         // Draw
         //----------------------------------------------------------------------------------
         BeginDrawing();
-        ClearBackground(BLACK);
-        DrawText("@", player.position.x, player.position.y, 40, RAYWHITE);
-        for (int i = 0; i < enemiesAmount; i++) {
-            DrawText("E", enemy[i].position.x, enemy[i].position.y, 40, RED);
-        }
+            ClearBackground(BLACK);
+            if (GAME.gameState == MAP) {
+                DrawRectangle(0, 0, GAME.screen.Width, GAME.screen.Height, YELLOW);
+                DrawTextPro(GetFontDefault(), "MAPA", GAME.screen.Center, (Vector2){60, 20}, 0.0f, 40.0f, 5.0f, BLACK);
+            } else {
+                BeginMode2D(camera);
+                    DrawTexturePro(
+                        background,
+                        (Rectangle){ 0, 0, (float)GAME.world.Width, (float)GAME.world.Height },  // pedaço da textura
+                        (Rectangle){ 0, 0, (float)GAME.world.Width, (float)GAME.world.Height },  // onde vai no mundo
+                        (Vector2){ 0, 0 },
+                        0.0f,
+                        WHITE
+                    );
+
+                    if (GAME.gameState == PLAYING) {
+                        DrawText("@", player.position.x - 15, player.position.y - 20, 40, RAYWHITE);
+                
+                        for (int i = 0; i < enemiesAmount; i++) {
+                          DrawText("E", enemy[i].position.x, enemy[i].position.y, 40, RED);
+                        }
+                        if (!GAME.projectiles.empty()) {
+                            for (const auto bullet : GAME.projectiles) {
+                                Rectangle bulletSprite = {bullet.position.x, bullet.position.y, 8.0f, 4.0f};
+                                DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
+                            }
+                        }
+                    } else if (GAME.gameState == INVENTORY) {
+                        DrawRectangle((camera.target.x - GAME.screen.Center.x + GAME.screen.Width/10.0f), (camera.target.y - GAME.screen.Center.y + GAME.screen.Height/10.0f), 8.0f * GAME.screen.Width/10.0f, 8.0f * GAME.screen.Height/10.0f, BLACK);
+                    }
+                EndMode2D();
+            }
+            DrawLineV(GAME.screen.Center, mouseScreen, RED);
         EndDrawing();
     }
 
