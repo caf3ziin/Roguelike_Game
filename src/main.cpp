@@ -97,62 +97,63 @@ int main() {
         // Update
         //----------------------------------------------------------------------------------
         // Update your variables here
+        if (GAME.gameState == PLAYING) {
+            if (IsKeyDown(KEY_D)) {
+                if (player.position.x + player.speed <= GAME.world.Width)
+                    player.position.x += player.speed;
+            }
+            if (IsKeyDown(KEY_A)) {
+                if (player.position.x - player.speed >= 0)
+                    player.position.x -= player.speed;
+            }
+            if (IsKeyDown(KEY_W)) {
+                if (player.position.y - player.speed >= 0)
+                    player.position.y -= player.speed;
+            }
+            if (IsKeyDown(KEY_S)) {
+                if (player.position.y + player.speed <= GAME.world.Height)
+                    player.position.y += player.speed;
+            }
+        }
 
-        if (IsKeyDown(KEY_D)) {
-            if (player.position.x + player.speed <= GAME.world.Width)
-                player.position.x += player.speed;
-        }
-        if (IsKeyDown(KEY_A)) {
-            if (player.position.x - player.speed >= 0)
-                player.position.x -= player.speed;
-        }
-        if (IsKeyDown(KEY_W)) {
-            if (player.position.y - player.speed >= 0)
-                player.position.y -= player.speed;
-        }
-        if (IsKeyDown(KEY_S)) {
-            if (player.position.y + player.speed <= GAME.world.Height)
-                player.position.y += player.speed;
-        }
-      
         if (IsKeyPressed(KEY_TAB)) {
             if (GAME.gameState == GameState::PLAYING) GAME.gameState = GameState::INVENTORY;
-            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::PLAYING;
-            else if (GAME.gameState == MAP) GAME.gameState = GameState::MAP;        
+            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::PLAYING;      
         }
         if (IsKeyPressed(KEY_M))
-            if (GAME.gameState == GameState::PLAYING) GAME.gameState = MAP;
-            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::MAP;
+            if (GAME.gameState == GameState::PLAYING || GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::MAP;
             else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;   
         if (IsKeyPressed(KEY_ESCAPE)) GAME.gameState = GameState::PLAYING;
 
         Vector2 mouseScreen = GetMousePosition();
         Vector2 mouseWorld = GetScreenToWorld2D(mouseScreen, camera);
 
-        if (IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.position));
-
-            GAME.projectiles.push_back({
-                player.position,
-                direction,
-                10.0f,
-                0,
-                0
-            });
-        }
-
         camera.target = (Vector2){player.position.x, player.position.y};
 
-        for (int i = (int)GAME.projectiles.size() - 1; i >= 0; i--) {
-            Projectile& bullet = GAME.projectiles[i];
-            
-            bullet.screenTime += GetFrameTime();
-            if (bullet.screenTime > 5.0f) {
-                GAME.projectiles.erase(GAME.projectiles.begin() + i);
-                continue;
+        if (GAME.gameState == PLAYING) {
+            if (IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.position));
+
+                GAME.projectiles.push_back({
+                    player.position,
+                    direction,
+                    10.0f,
+                    0,
+                    0
+                });
             }
 
-            bullet.position = Vector2Add(bullet.position, Vector2Scale(bullet.direction, bullet.speed));
+            for (int i = (int)GAME.projectiles.size() - 1; i >= 0; i--) {
+                Projectile& bullet = GAME.projectiles[i];
+                
+                bullet.screenTime += GetFrameTime();
+                if (bullet.screenTime > 5.0f) {
+                    GAME.projectiles.erase(GAME.projectiles.begin() + i);
+                    continue;
+                }
+
+                bullet.position = Vector2Add(bullet.position, Vector2Scale(bullet.direction, bullet.speed));
+            }
         }
 
         //----------------------------------------------------------------------------------
@@ -161,26 +162,34 @@ int main() {
         //----------------------------------------------------------------------------------
         BeginDrawing();
             ClearBackground(BLACK);
+            if (GAME.gameState == MAP) {
+                DrawRectangle(0, 0, GAME.screen.Width, GAME.screen.Height, YELLOW);
+                DrawTextPro(GetFontDefault(), "MAPA", GAME.screen.Center, (Vector2){60, 20}, 0.0f, 40.0f, 5.0f, BLACK);
+            } else {
+                BeginMode2D(camera);
+                    DrawTexturePro(
+                        background,
+                        (Rectangle){ 0, 0, (float)GAME.world.Width, (float)GAME.world.Height },  // pedaço da textura
+                        (Rectangle){ 0, 0, (float)GAME.world.Width, (float)GAME.world.Height },  // onde vai no mundo
+                        (Vector2){ 0, 0 },
+                        0.0f,
+                        WHITE
+                    );
 
-            BeginMode2D(camera);
-                DrawTexturePro(
-                    background,
-                    (Rectangle){ 0, 0, (float)GAME.world.Width, (float)GAME.world.Height },  // pedaço da textura
-                    (Rectangle){ 0, 0, (float)GAME.world.Width, (float)GAME.world.Height },  // onde vai no mundo
-                    (Vector2){ 0, 0 },
-                    0.0f,
-                    WHITE
-                );
-                DrawText("@", player.position.x - 15, player.position.y - 20, 40, RAYWHITE);
+                    if (GAME.gameState == PLAYING) {
+                        DrawText("@", player.position.x - 15, player.position.y - 20, 40, RAYWHITE);
 
-                if (!GAME.projectiles.empty()) {
-                    for (const auto bullet : GAME.projectiles) {
-                        Rectangle bulletSprite = {bullet.position.x, bullet.position.y, 8.0f, 4.0f};
-                        DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
+                        if (!GAME.projectiles.empty()) {
+                            for (const auto bullet : GAME.projectiles) {
+                                Rectangle bulletSprite = {bullet.position.x, bullet.position.y, 8.0f, 4.0f};
+                                DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
+                            }
+                        }
+                    } else if (GAME.gameState == INVENTORY) {
+                        DrawRectangle((camera.target.x - GAME.screen.Center.x + GAME.screen.Width/10.0f), (camera.target.y - GAME.screen.Center.y + GAME.screen.Height/10.0f), 8.0f * GAME.screen.Width/10.0f, 8.0f * GAME.screen.Height/10.0f, BLACK);
                     }
-                }
-            EndMode2D();
-
+                EndMode2D();
+            }
             DrawLineV(GAME.screen.Center, mouseScreen, RED);
         EndDrawing();
     }
