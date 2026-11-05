@@ -1,5 +1,6 @@
 #include "raylib.h"
 #include "raymath.h"
+#include "test.h"
 #include <vector>
 
 enum GameState { PLAYING, INVENTORY, MAP };
@@ -68,6 +69,8 @@ Players player;
 //------------------------------------------------------------------------------------
 int main() {
 
+    printingFunctionTEST();
+    
     // Initialization
     //-------------------------------------------------------------------------------------
     InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");
