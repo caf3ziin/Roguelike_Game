@@ -23,5 +23,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
+if exist resources xcopy /E /I /Y /Q resources build\resources >nul
+
 echo OK, rodando...
 build\jogo.exe
