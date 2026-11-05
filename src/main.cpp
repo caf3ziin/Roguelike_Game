@@ -118,6 +118,7 @@ int main() {
     
     // Initialization
     //-------------------------------------------------------------------------------------
+    ChangeDirectory(GetApplicationDirectory());
     InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
     SetExitKey(KEY_NULL);           // Retira o ESC como tecla de fechar o jogo
