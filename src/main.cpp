@@ -4,6 +4,9 @@
 #include <vector>
 #include <random>
 
+#define MAX_FRAME_SPEED     15
+#define MIN_FRAME_SPEED      1
+
 using namespace std;
 
 random_device rd; 
@@ -57,8 +60,8 @@ struct GameStructure {
     };
     WorldConfig world;
 
-    std::vector<Projectile> projectiles;
-    std::vector<Enemy> enemies;
+    vector<Projectile> projectiles;
+    vector<Enemy> enemies;
 };
 
 GameStructure GAME;
@@ -157,7 +160,7 @@ int main() {
 
     //-------------------------------------------------------------------------------------
     // variables
-    Texture2D background = LoadTexture("resources/grassBackground.png");
+    Texture2D background = LoadTexture("resources/backgrounds/grassBackground.png");
     SetTextureWrap(background, TEXTURE_WRAP_REPEAT);
     Camera2D camera = {0};
 
