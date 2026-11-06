@@ -9,8 +9,16 @@ using namespace std;
 random_device rd; 
 mt19937 gen(rd()); 
 
+//-----------------------------------------------------------------------------------------
+// ENUMS
+
 enum GameState { PLAYING, INVENTORY, MAP };
 enum enemyState { ROAMING, SEARCHING, ATTACKING};
+enum TileType { FLOOR, WALL, WATER };
+
+//------------------------------------------------------------------------------------------
+//------------------------------------------------------------------------------------------
+// INICIO DAS STRUCTS
 
 struct Projectile {
     Vector2 position;
@@ -30,6 +38,10 @@ struct Enemy {
 
 struct GameStructure {
     GameState gameState = PLAYING;
+    static const int TILE = 32;
+    static const int MAP_W = 94;
+    static const int MAP_H = 94;
+    // mundo em pixels = MAP_W * TILE = 3008 pixels
 
     struct WindowConfig {
         const int Width = 1280;
@@ -39,8 +51,8 @@ struct GameStructure {
     WindowConfig screen;
 
     struct WorldConfig {
-        const int Width = 3000;
-        const int Height = 3000;
+        const int Width = MAP_W * TILE;
+        const int Height = MAP_H * TILE;
         const Vector2 Center = {Width/2.0f, Height/2.0f};
     };
     WorldConfig world;
@@ -57,6 +69,24 @@ struct Players {
 };
 
 Players player;
+
+// FIM DAS STRUCTS
+//------------------------------------------------------------------------------------------
+//------------------------------------------------------------------------------------------
+// INICIO DAS FUNCOES
+
+
+std::vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                // Vetor unidimensional que guarda os tipos de tiles
+TileType& tileAt(int x, int y) { return tiles[y * GAME.MAP_W + x]; }        // Função que retorna o tipo do tile na posição (x, y)
+
+
+bool isWall(int x, int y) {
+    int tileX = (int)(x / GAME.TILE), tileY = (int)(y / GAME.TILE);
+
+    if (tileX < 0 || tileY < 0 || tileX >= GAME.MAP_W || tileY >= GAME.MAP_H) return true;
+
+    return tileAt(tileX, tileY) == WALL;
+}
 
 
 /*
@@ -227,6 +257,24 @@ int main() {
                         0.0f,
                         WHITE
                     );
+
+                    {
+                        Vector2 beg = GetScreenToWorld2D({0, 0}, camera);
+                        Vector2 end = GetScreenToWorld2D({(float)GAME.screen.Width, (float)GAME.screen.Height}, camera);
+
+                        int x0 = (int)(beg.x / GAME.TILE) - 1,  x1 = (int)(end.x / GAME.TILE) + 1;
+                        int y0 = (int)(beg.y / GAME.TILE) - 1,  y1 = (int)(end.y / GAME.TILE) + 1;
+
+                        if (x0 < 0) x0 = 0;  if (x1 >= GAME.MAP_W) x1 = GAME.MAP_W - 1;
+                        if (y0 < 0) y0 = 0;  if (y1 >= GAME.MAP_H) y1 = GAME.MAP_H - 1;
+
+                        for (int y = y0; y <= y1; y++) {
+                            for (int x = x0; x <= x1; x++) {
+                                if (tileAt(x, y) == WALL)
+                                    DrawRectangle(x * GAME.TILE, y * GAME.TILE, GAME.TILE, GAME.TILE, DARKGRAY);
+                            }
+                        }
+                    }
 
                     if (GAME.gameState == PLAYING) {
                         DrawText("@", player.position.x - 15, player.position.y - 20, 40, RAYWHITE);
