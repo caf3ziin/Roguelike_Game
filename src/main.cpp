@@ -1,8 +1,9 @@
 #include "raylib.h"
 #include "raymath.h"
-#include "test.h"
+#include "debug.h"
 #include <vector>
 #include <random>
+#include <ctime>
 
 #define MAX_FRAME_SPEED     15
 #define MIN_FRAME_SPEED      1
@@ -40,11 +41,15 @@ struct Enemy {
 };
 
 struct GameStructure {
-    GameState gameState = PLAYING;
-    static const int TILE = 32;
-    static const int MAP_W = 94;
-    static const int MAP_H = 94;
+    GameState gameState = PLAYING;      // variável que guarda o estado do jogo para recursos de menu e mapa
+    static const int TILE = 32;         // tamanho de cada "quadrado" da matriz em pixels
+    static const int MAP_W = 94;        // largura (width) do mapa em tiles ("quadrados") na matriz do jogo
+    static const int MAP_H = 94;        // altura (height) do mapa em tiles ("quadrados") na matriz do jogo
     // mundo em pixels = MAP_W * TILE = 3008 pixels
+
+    // unsigned = não existem valores negativos
+    // variável da seed da run
+    unsigned int seed;
 
     struct WindowConfig {
         const int Width = 1280;
@@ -146,16 +151,29 @@ int main() {
 
     const int enemiesAmount = 20;
     Enemy enemy[enemiesAmount];
-
-    printingFunctionTEST();
     
     // Initialization
     //-------------------------------------------------------------------------------------
-    ChangeDirectory(GetApplicationDirectory());
-    InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");
+    ChangeDirectory(GetApplicationDirectory());                         // Muda o diretório de inicialiçação para o diretório onde se encontra o executável
+    InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");     // INICIALIZAÇÃO DA JANELA (INIT-WINDOW)
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
     SetExitKey(KEY_NULL);           // Retira o ESC como tecla de fechar o jogo
+
+    // Geração de seed aleatória manual, por motivos de debug ("manual" pois o raylib por padrão já gera seeds aleatórias irrastreáveis)
+    {
+        unsigned int seed = (unsigned int)std::time(nullptr);       // a seed gerada é de acordo com o horário da execução no sistema
+        SetRandomSeed(seed);
+        GAME.seed = seed;   // Guarda a seed na struct do jogo, e a variável local é jogada fora
+    }
+    printSeedDebug(GAME.seed);
+
     createEnemies(enemy, enemiesAmount);
+
+    for (int i = 0; i < tiles.size(); i++) {
+        int percentage = GetRandomValue(1, 100);
+        if (percentage <= 15)
+            tiles[i] = WALL;
+    }
 
 
     //-------------------------------------------------------------------------------------
@@ -297,6 +315,7 @@ int main() {
                 EndMode2D();
             }
             DrawLineV(GAME.screen.Center, mouseScreen, RED);
+            DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
         EndDrawing();
     }
 
