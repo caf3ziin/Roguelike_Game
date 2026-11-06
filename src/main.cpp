@@ -28,7 +28,7 @@ struct Projectile {
     Vector2 position;
     Vector2 direction;
     float speed, screenTime;
-    int damage;
+    int damage, life;
 };
 
 struct Enemy {
@@ -88,12 +88,47 @@ std::vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                // V
 TileType& tileAt(int x, int y) { return tiles[y * GAME.MAP_W + x]; }        // Função que retorna o tipo do tile na posição (x, y)
 
 
+// Verifica automaticamente se a posição (x, y) é uma parede na matriz do jogo
 bool isWall(int x, int y) {
     int tileX = (int)(x / GAME.TILE), tileY = (int)(y / GAME.TILE);
 
     if (tileX < 0 || tileY < 0 || tileX >= GAME.MAP_W || tileY >= GAME.MAP_H) return true;
 
     return tileAt(tileX, tileY) == WALL;
+}
+
+
+// Gera os inimigos na volta do personagem
+void createEnemies(Enemy (&enemy)[20], int enemiesAmount){
+    uniform_int_distribution<int> ranHeight(0, GAME.screen.Height - 40); 
+    uniform_int_distribution<int> ranWidth(0, GAME.screen.Width - 40); 
+
+    for(int i = 0; i < enemiesAmount; i++){
+        do {
+            enemy[i].position = {
+                (float)ranWidth(gen),
+                (float)ranHeight(gen)
+            };
+
+        } while (Vector2Distance(enemy[i].position, player.position) < 150);
+    }
+
+}
+
+// Move os inimigos em direção ao player de acordo com sua posição (x, y)
+void enemyMovement(Enemy &enemy) {
+
+    if (enemy.position.x < player.position.x)
+        enemy.position.x += enemy.speed;
+
+    else if (enemy.position.x > player.position.x)
+        enemy.position.x -= enemy.speed;
+
+    if (enemy.position.y < player.position.y)
+        enemy.position.y += enemy.speed;
+
+    else if (enemy.position.y > player.position.y)
+        enemy.position.y -= enemy.speed;
 }
 
 
@@ -115,37 +150,6 @@ bool isWall(int x, int y) {
 //------------------------------------------------------------------------------------
 // Program main entry point
 //------------------------------------------------------------------------------------
-
-void createEnemies(Enemy (&enemy)[20], int enemiesAmount){
-    uniform_int_distribution<int> ranHeight(0, GAME.screen.Height - 40); 
-    uniform_int_distribution<int> ranWidth(0, GAME.screen.Width - 40); 
-
-    for(int i = 0; i < enemiesAmount; i++){
-        do {
-            enemy[i].position = {
-                (float)ranWidth(gen),
-                (float)ranHeight(gen)
-            };
-
-        } while (Vector2Distance(enemy[i].position, player.position) < 150);
-    }
-
-}
-
-void enemyMovement(Enemy &enemy) {
-
-    if (enemy.position.x < player.position.x)
-        enemy.position.x += enemy.speed;
-
-    else if (enemy.position.x > player.position.x)
-        enemy.position.x -= enemy.speed;
-
-    if (enemy.position.y < player.position.y)
-        enemy.position.y += enemy.speed;
-
-    else if (enemy.position.y > player.position.y)
-        enemy.position.y -= enemy.speed;
-}
 
 int main() {
 
