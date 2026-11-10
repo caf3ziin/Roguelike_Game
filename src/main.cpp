@@ -15,9 +15,11 @@ mt19937 gen(rd());
 
 //-----------------------------------------------------------------------------------------
 // ENUMS
+enum PlayerSkin { KITSUNE, GANGSTER, SOLDIER};
+enum PlayerAnimation { PLAYER_RUN, PLAYER_IDLE, PLAYER_ATTACK, PLAYER_DEAD};
 
 enum GameState { PLAYING, INVENTORY, MAP };
-enum enemyState { ROAMING, SEARCHING, ATTACKING};
+enum EnemyState { ROAMING, SEARCHING, ATTACKING};
 enum TileType { FLOOR, WALL, WATER };
 
 //------------------------------------------------------------------------------------------
@@ -38,6 +40,7 @@ struct Enemy {
     int speed = 2;
 
     Vector2 position;
+    bool facingLeft = false;
 };
 
 struct GameStructure {
@@ -72,11 +75,31 @@ struct GameStructure {
 GameStructure GAME;
 
 struct Players {
+    int healthPoints = 100;
     int speed = 5;
+
     Vector2 position = GAME.world.Center;
+    bool facingLeft = false;
+
+    PlayerSkin skin = KITSUNE;
+    PlayerAnimation animation = PLAYER_IDLE;
+  
+    int currentFrame = 0;
+    float frameTimer = 0.0f;
 };
 
 Players player;
+
+struct PlayerSprites {
+    Texture2D idle;
+    Texture2D run;
+    Texture2D attack;
+    Texture2D dead;
+};
+
+PlayerSprites kitsuneSprites;
+PlayerSprites gangsterSprites;
+PlayerSprites soldierSprites;
 
 // FIM DAS STRUCTS
 //------------------------------------------------------------------------------------------
@@ -84,7 +107,7 @@ Players player;
 // INICIO DAS FUNCOES
 
 
-std::vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                // Vetor unidimensional que guarda os tipos de tiles
+vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                // Vetor unidimensional que guarda os tipos de tiles
 TileType& tileAt(int x, int y) { return tiles[y * GAME.MAP_W + x]; }        // Função que retorna o tipo do tile na posição (x, y)
 
 
@@ -99,38 +122,136 @@ bool isWall(int x, int y) {
 
 
 // Gera os inimigos na volta do personagem
-void createEnemies(Enemy (&enemy)[20], int enemiesAmount){
-    uniform_int_distribution<int> ranHeight(0, GAME.screen.Height - 40); 
-    uniform_int_distribution<int> ranWidth(0, GAME.screen.Width - 40); 
+void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
+    uniform_int_distribution<int> ranHeight(0, GAME.MAP_W * GAME.TILE - 40); 
+    uniform_int_distribution<int> ranWidth(0, GAME.MAP_H * GAME.TILE - 40); 
 
     for(int i = 0; i < enemiesAmount; i++){
         do {
-            enemy[i].position = {
+            enemies[i].position = {
                 (float)ranWidth(gen),
                 (float)ranHeight(gen)
             };
 
-        } while (Vector2Distance(enemy[i].position, player.position) < 150);
+        } while (Vector2Distance(enemies[i].position, player.position) < 150);
     }
 
 }
 
 // Move os inimigos em direção ao player de acordo com sua posição (x, y)
-void enemyMovement(Enemy &enemy) {
+void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
+    Enemy& enemy = enemies[enemyIndex];
 
-    if (enemy.position.x < player.position.x)
-        enemy.position.x += enemy.speed;
+    Vector2 direction = Vector2Subtract(player.position, enemy.position);
 
-    else if (enemy.position.x > player.position.x)
-        enemy.position.x -= enemy.speed;
+    if (direction.x < 0)
+        enemy.facingLeft = true;
+    else if (direction.x > 0)
+        enemy.facingLeft = false;
 
-    if (enemy.position.y < player.position.y)
-        enemy.position.y += enemy.speed;
+    if (Vector2Length(direction) == 0.0f)
+        return;
 
-    else if (enemy.position.y > player.position.y)
-        enemy.position.y -= enemy.speed;
+    direction = Vector2Normalize(direction);
+
+    Vector2 nextPosition = Vector2Add(enemy.position, Vector2Scale(direction, (float)enemy.speed)
+    );
+
+    const float minimumDistance = 15.0f;
+
+    for (int i = 0; i < enemiesAmount; i++) {
+        if (i == enemyIndex)
+            continue;
+
+        if (Vector2Distance(nextPosition, enemies[i].position) < minimumDistance) {
+            return;
+        }
+    }
+
+    enemy.position = nextPosition;
 }
 
+PlayerSprites& getPlayerSprites() {
+    switch (player.skin) {
+        case GANGSTER:
+            return gangsterSprites;
+
+        case SOLDIER:
+            return soldierSprites;
+
+        case KITSUNE:
+        default:
+            return kitsuneSprites;
+    }
+}
+
+Texture2D getPlayerTexture() {
+    PlayerSprites& sprites = getPlayerSprites();
+
+    switch (player.animation) {
+        case PLAYER_IDLE:
+            return sprites.idle;
+
+        case PLAYER_ATTACK:
+            return sprites.attack;
+
+        case PLAYER_DEAD:
+            return sprites.dead;
+
+        case PLAYER_RUN:
+        default:
+            return sprites.run;
+    }
+}
+
+Texture2D loadSprite(const char* path, Color backgroundColor) {
+    Image image = LoadImage(path);
+    ImageColorReplace(&image, backgroundColor, BLANK);
+
+    Texture2D texture = LoadTextureFromImage(image);
+    UnloadImage(image);
+
+    return texture;
+}
+
+int getPlayerFrameCount() {
+    switch (player.skin) {
+        case KITSUNE:
+            switch (player.animation) {
+                case PLAYER_DEAD: return 10;
+                default: return 8;
+            }
+
+        case GANGSTER:
+            switch (player.animation) {
+                case PLAYER_RUN: return 10;
+                case PLAYER_IDLE: return 6;
+                case PLAYER_ATTACK: return 4;
+                case PLAYER_DEAD: return 5;
+            }
+
+        case SOLDIER:
+            switch (player.animation) {
+                case PLAYER_RUN:
+                case PLAYER_IDLE:
+                    return 8;
+
+                case PLAYER_ATTACK:
+                case PLAYER_DEAD:
+                    return 4;
+            }
+    }
+
+    return 1;
+}
+
+void setPlayerAnimation(PlayerAnimation animation) {
+    if (player.animation != animation) {
+        player.animation = animation;
+        player.currentFrame = 0;
+        player.frameTimer = 0.0f;
+    }
+}
 
 /*
     TODO:
@@ -154,7 +275,7 @@ void enemyMovement(Enemy &enemy) {
 int main() {
 
     const int enemiesAmount = 20;
-    Enemy enemy[enemiesAmount];
+    vector<Enemy> enemies(enemiesAmount);
     
     // Initialization
     //-------------------------------------------------------------------------------------
@@ -165,13 +286,13 @@ int main() {
 
     // Geração de seed aleatória manual, por motivos de debug ("manual" pois o raylib por padrão já gera seeds aleatórias irrastreáveis)
     {
-        unsigned int seed = (unsigned int)std::time(nullptr);       // a seed gerada é de acordo com o horário da execução no sistema
+        unsigned int seed = (unsigned int)time(nullptr);       // a seed gerada é de acordo com o horário da execução no sistema
         SetRandomSeed(seed);
         GAME.seed = seed;   // Guarda a seed na struct do jogo, e a variável local é jogada fora
     }
     printSeedDebug(GAME.seed);
 
-    createEnemies(enemy, enemiesAmount);
+    createEnemies(enemies, enemiesAmount);
 
     for (int i = 0; i < tiles.size(); i++) {
         int percentage = GetRandomValue(1, 100);
@@ -179,10 +300,49 @@ int main() {
             tiles[i] = WALL;
     }
 
+    //-------------------------------------------------------------------------------------
+    //Sprites Generation
+
+    kitsuneSprites.idle =
+        loadSprite("resources/sprites/player/kitsune/Idle.png", WHITE);
+    kitsuneSprites.run =
+        loadSprite("resources/sprites/player/kitsune/Run.png", WHITE);
+    kitsuneSprites.attack =
+        loadSprite("resources/sprites/player/kitsune/Attack.png", WHITE);
+    kitsuneSprites.dead =
+        loadSprite("resources/sprites/player/kitsune/Dead.png", WHITE);
+
+    gangsterSprites.idle =
+        loadSprite("resources/sprites/player/gangster/Idle.png", BLACK);
+    gangsterSprites.run =
+        loadSprite("resources/sprites/player/gangster/Run.png", BLACK);
+    gangsterSprites.attack =
+        loadSprite("resources/sprites/player/gangster/Attack.png", BLACK);
+    gangsterSprites.dead =
+        loadSprite("resources/sprites/player/gangster/Dead.png", BLACK);
+
+    soldierSprites.idle =
+        loadSprite("resources/sprites/player/soldier/Idle.png", BLACK);
+    soldierSprites.run =
+        loadSprite("resources/sprites/player/soldier/Run.png", BLACK);
+    soldierSprites.attack =
+        loadSprite("resources/sprites/player/soldier/Attack.png", BLACK);
+    soldierSprites.dead =
+        loadSprite("resources/sprites/player/soldier/Dead.png", BLACK);
+
+    //
+    //--------------------------------------------------------------------------------------
 
     //-------------------------------------------------------------------------------------
     // variables
     Texture2D background = LoadTexture("resources/backgrounds/grassBackground.png");
+    Image playerImage = LoadImage("resources/sprites/player/kitsune/Run.png");
+    ImageColorReplace(&playerImage, WHITE, BLANK);
+    UnloadImage(playerImage);
+    Image enemyImage = LoadImage("resources/sprites/enemy/zombie/Walk.png");
+    ImageColorReplace(&enemyImage, WHITE, BLANK);
+    Texture2D enemyZombie = LoadTextureFromImage(enemyImage);
+    UnloadImage(enemyImage);
     SetTextureWrap(background, TEXTURE_WRAP_REPEAT);
     Camera2D camera = {0};
 
@@ -191,32 +351,56 @@ int main() {
     camera.rotation = 0.0f;
     camera.zoom = 1.0f;
 
+    float frameDuration = 0.1f;
+    int enemyCurrentFrame = 0;
+    float enemyFrameTimer = 0.0f;
+
     //--------------------------------------------------------------------------------------
 
     // Main game loop
     while (!WindowShouldClose()) {
 
-
         // Update
         //----------------------------------------------------------------------------------
         // Update your variables here
+
+        player.frameTimer += GetFrameTime();
+
+        if (player.frameTimer >= frameDuration) {
+            player.frameTimer = 0.0f;
+            player.currentFrame = (player.currentFrame + 1) % getPlayerFrameCount();
+        }
         if (GAME.gameState == PLAYING) {
+            Vector2 movement = {0.0f, 0.0f};
+
             if (IsKeyDown(KEY_D)) {
-                if (player.position.x + player.speed <= GAME.world.Width)
-                    player.position.x += player.speed;
+                movement.x += 1.0f;
+                player.facingLeft = false;
             }
+
             if (IsKeyDown(KEY_A)) {
-                if (player.position.x - player.speed >= 0)
-                    player.position.x -= player.speed;
+                movement.x -= 1.0f;
+                player.facingLeft = true;
             }
-            if (IsKeyDown(KEY_W)) {
-                if (player.position.y - player.speed >= 0)
-                    player.position.y -= player.speed;
+
+            if (IsKeyDown(KEY_S))
+                movement.y += 1.0f;
+
+            if (IsKeyDown(KEY_W))
+                movement.y -= 1.0f;
+
+            if (Vector2Length(movement) > 0.0f) {
+                movement = Vector2Normalize(movement);
+                setPlayerAnimation(PLAYER_RUN);
+            } else {
+                setPlayerAnimation(PLAYER_IDLE);
             }
-            if (IsKeyDown(KEY_S)) {
-                if (player.position.y + player.speed <= GAME.world.Height)
-                    player.position.y += player.speed;
-            }
+
+            player.position.x += movement.x * player.speed;
+            player.position.y += movement.y * player.speed;
+
+            player.position.x = Clamp(player.position.x, 0.0f, (float)GAME.world.Width);
+            player.position.y = Clamp(player.position.y, 0.0f, (float)GAME.world.Height);
         }
 
         if (IsKeyPressed(KEY_TAB)) {
@@ -229,7 +413,7 @@ int main() {
         if (IsKeyPressed(KEY_ESCAPE)) GAME.gameState = GameState::PLAYING;
         
         for (int i = 0; i < enemiesAmount; i++) {
-            enemyMovement(enemy[i]);
+            enemyMovement(enemies, i, enemiesAmount);
         }
 
         Vector2 mouseScreen = GetMousePosition();
@@ -260,6 +444,17 @@ int main() {
                 }
 
                 bullet.position = Vector2Add(bullet.position, Vector2Scale(bullet.direction, bullet.speed));
+            }
+
+            if (player.frameTimer >= frameDuration) {
+                player.frameTimer = 0.0f;
+                player.currentFrame = (player.currentFrame + 1) % 8;
+            }
+
+            enemyFrameTimer += GetFrameTime();
+            if (enemyFrameTimer >= frameDuration) {
+                enemyFrameTimer = 0.0f;
+                enemyCurrentFrame = (enemyCurrentFrame + 1) % 10;
             }
         }
 
@@ -302,10 +497,56 @@ int main() {
                     }
 
                     if (GAME.gameState == PLAYING) {
-                        DrawText("@", player.position.x - 15, player.position.y - 20, 40, RAYWHITE);
+                        Rectangle playerSource = {
+                            player.currentFrame * 128.0f,
+                            0.0f,
+                            128.0f,
+                            128.0f
+                        };
+                        if (player.facingLeft)
+                            playerSource.width = -playerSource.width;
+
+                        Rectangle playerDestination = {
+                            player.position.x - 48.0f,
+                            player.position.y - 48.0f,
+                            96.0f,
+                            96.0f
+                        };
+
+                        DrawTexturePro(
+                            getPlayerTexture(),
+                            playerSource,
+                            playerDestination,
+                            (Vector2){0.0f, 0.0f},
+                            0.0f,
+                            WHITE
+                        );
                 
                         for (int i = 0; i < enemiesAmount; i++) {
-                          DrawText("E", enemy[i].position.x, enemy[i].position.y, 40, RED);
+                            Rectangle enemySource = {
+                                enemyCurrentFrame * 128.0f,
+                                0.0f,
+                                128.0f,
+                                128.0f
+                            };
+                            if (enemies[i].facingLeft)
+                                enemySource.width = -enemySource.width;
+
+                            Rectangle enemyDestination = {
+                                enemies[i].position.x - 48.0f,
+                                enemies[i].position.y - 48.0f,
+                                96.0f,
+                                96.0f
+                            };
+
+                            DrawTexturePro(
+                                enemyZombie,
+                                enemySource,
+                                enemyDestination,
+                                (Vector2){0.0f, 0.0f},
+                                0.0f,
+                                WHITE
+                            );
                         }
                         if (!GAME.projectiles.empty()) {
                             for (const auto bullet : GAME.projectiles) {
@@ -326,6 +567,23 @@ int main() {
     // De-Initialization
     //--------------------------------------------------------------------------------------
     UnloadTexture(background);
+
+    UnloadTexture(kitsuneSprites.idle);
+    UnloadTexture(kitsuneSprites.run);
+    UnloadTexture(kitsuneSprites.attack);
+    UnloadTexture(kitsuneSprites.dead);
+
+    UnloadTexture(gangsterSprites.idle);
+    UnloadTexture(gangsterSprites.run);
+    UnloadTexture(gangsterSprites.attack);
+    UnloadTexture(gangsterSprites.dead);
+
+    UnloadTexture(soldierSprites.idle);
+    UnloadTexture(soldierSprites.run);
+    UnloadTexture(soldierSprites.attack);
+    UnloadTexture(soldierSprites.dead);
+
+    UnloadTexture(enemyZombie);
     CloseWindow();        // Close window and OpenGL context
     //--------------------------------------------------------------------------------------
 
