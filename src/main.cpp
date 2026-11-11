@@ -5,13 +5,10 @@
 #include <random>
 #include <ctime>
 
-#define MAX_FRAME_SPEED     15
-#define MIN_FRAME_SPEED      1
 
 using namespace std;
 
-random_device rd; 
-mt19937 gen(rd()); 
+mt19937 gen{}; 
 
 //-----------------------------------------------------------------------------------------
 // ENUMS
@@ -26,20 +23,18 @@ enum TileType { FLOOR, WALL, WATER };
 //------------------------------------------------------------------------------------------
 // INICIO DAS STRUCTS
 
-// Caixa da hitbox geral (retângulos)
+// Caixa da hitbox geral (retângulos, "sem" rotação)
 struct Collider {
     Vector2 size   = { 24, 16 };   // largura e altura da caixa
     Vector2 offset = { 0, 24 };    // deslocamento a partir do centro da entidade
 };
 
-// struct que guarda a posição, a velocidade e a hitbox (collider) de cada entidade do jogo 
 struct Entity {
     Vector2 position = { 0, 0 };
     float speed = 5.0f;
     Collider collider;
 };
 
-// Objetos de dano arremessados, com posição independente da entidade atacante
 struct Projectile {
     Entity body;
     Vector2 direction = { 0, 0 };
@@ -48,7 +43,6 @@ struct Projectile {
     int life = 1;
 };
 
-// Toda entidade com movimento e IA próprios com objetivo de matar o player
 struct Enemy {
     Entity body = {.speed = 2.0f};
     int healthPoints = 50;
@@ -58,7 +52,6 @@ struct Enemy {
     bool facingLeft = false;
 };
 
-// ESTRUTURA DE CONFIGURAÇÕES GERAIS DO JOGO
 struct GameStructure {
     GameState gameState = PLAYING;      // variável que guarda o estado do jogo para recursos de menu e mapa
     static const int TILE = 32;         // tamanho de cada "quadrado" da matriz em pixels
@@ -87,26 +80,24 @@ struct GameStructure {
     vector<Projectile> projectiles;
     vector<Enemy> enemies;
 };
-// Instância que guarda as configurações do jogo
+
 GameStructure GAME;
 
-// struct de cada jogador
 struct Players {
     Entity body = {.position = GAME.world.Center};
     int healthPoints = 100;
 
     bool facingLeft = false;
 
-    PlayerSkin skin = GANGSTER;
+    PlayerSkin skin = KITSUNE;
     PlayerAnimation animation = PLAYER_IDLE;
   
     int currentFrame = 0;
     float frameTimer = 0.0f;
 };
-// Player 1
+
 Players player;
 
-// struct que guarda cada opção de animação das skins do jogador (idle, run, attack e dead)
 struct PlayerSprites {
     Texture2D idle;
     Texture2D run;
@@ -123,13 +114,13 @@ PlayerSprites soldierSprites;
 //------------------------------------------------------------------------------------------
 // INICIO DAS FUNCOES
 
-
-vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                // Vetor unidimensional que guarda os tipos de tiles
+// Vetor unidimensional que guarda os tipos de tiles
+vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                
 TileType& tileAt(int x, int y) { return tiles[y * GAME.MAP_W + x]; }        // Função que retorna o tipo do tile na posição (x, y)
 
 
 // Verifica automaticamente se a posição (x, y) é uma parede na matriz do jogo
-bool isWall(int x, int y) {
+bool isWall(float x, float y) {
     int tileX = (int)(x / GAME.TILE), tileY = (int)(y / GAME.TILE);
 
     if (tileX < 0 || tileY < 0 || tileX >= GAME.MAP_W || tileY >= GAME.MAP_H) return true;
@@ -137,7 +128,6 @@ bool isWall(int x, int y) {
     return tileAt(tileX, tileY) == WALL;
 }
 
-// pega a caixa de hitbox atual do collider de acordo com a posição
 Rectangle getHitbox(Vector2 pos, const Collider& c) {
     return {
         pos.x + c.offset.x - c.size.x/2,
@@ -150,8 +140,8 @@ Rectangle getHitbox(Vector2 pos, const Collider& c) {
 
 // Gera os inimigos na volta do personagem
 void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
-    uniform_int_distribution<int> ranHeight(0, GAME.MAP_W * GAME.TILE - 40); 
-    uniform_int_distribution<int> ranWidth(0, GAME.MAP_H * GAME.TILE - 40); 
+    uniform_int_distribution<int> ranHeight(0, GAME.MAP_H * GAME.TILE - 40); 
+    uniform_int_distribution<int> ranWidth(0, GAME.MAP_W * GAME.TILE - 40); 
 
     for(int i = 0; i < enemiesAmount; i++){
         do {
@@ -302,7 +292,7 @@ void setPlayerAnimation(PlayerAnimation animation) {
 int main() {
 
     const int enemiesAmount = 20;
-    vector<Enemy> enemies(enemiesAmount);
+    GAME.enemies.resize(enemiesAmount);
     
     // Initialization
     //-------------------------------------------------------------------------------------
@@ -315,16 +305,23 @@ int main() {
     {
         unsigned int seed = (unsigned int)time(nullptr);       // a seed gerada é de acordo com o horário da execução no sistema
         SetRandomSeed(seed);
+        gen.seed(seed);
         GAME.seed = seed;   // Guarda a seed na struct do jogo, e a variável local é jogada fora
     }
     printSeedDebug(GAME.seed);
 
-    createEnemies(enemies, enemiesAmount);
+    createEnemies(GAME.enemies, enemiesAmount);
 
     for (int i = 0; i < tiles.size(); i++) {
-        int percentage = GetRandomValue(1, 100);
-        if (percentage <= 15)
-            tiles[i] = WALL;
+        if (GetRandomValue(1, 100) <= 15) {
+            int tx = i % GAME.MAP_W;
+            int ty = i / GAME.MAP_W;
+            Vector2 pos = {tx * (float)GAME.TILE, ty * (float)GAME.TILE};
+            float RADIUS = GAME.TILE * 10.0f;
+
+            if (Vector2DistanceSqr(player.body.position, pos) >= RADIUS * RADIUS)
+                tiles[i] = WALL;
+        }
     }
 
     //-------------------------------------------------------------------------------------
@@ -363,9 +360,6 @@ int main() {
     //-------------------------------------------------------------------------------------
     // variables
     Texture2D background = LoadTexture("resources/backgrounds/grassBackground.png");
-    Image playerImage = LoadImage("resources/sprites/player/kitsune/Run.png");
-    ImageColorReplace(&playerImage, WHITE, BLANK);
-    UnloadImage(playerImage);
     Image enemyImage = LoadImage("resources/sprites/enemy/zombie/Walk.png");
     ImageColorReplace(&enemyImage, WHITE, BLANK);
     Texture2D enemyZombie = LoadTextureFromImage(enemyImage);
@@ -440,7 +434,7 @@ int main() {
         if (IsKeyPressed(KEY_ESCAPE)) GAME.gameState = GameState::PLAYING;
         
         for (int i = 0; i < enemiesAmount; i++) {
-            enemyMovement(enemies, i, enemiesAmount);
+            enemyMovement(GAME.enemies, i, enemiesAmount);
         }
 
         Vector2 mouseScreen = GetMousePosition();
@@ -470,11 +464,6 @@ int main() {
                 }
 
                 bullet.body.position = Vector2Add(bullet.body.position, Vector2Scale(bullet.direction, bullet.body.speed));
-            }
-
-            if (player.frameTimer >= frameDuration) {
-                player.frameTimer = 0.0f;
-                player.currentFrame = (player.currentFrame + 1) % 8;
             }
 
             enemyFrameTimer += GetFrameTime();
@@ -555,12 +544,12 @@ int main() {
                                 128.0f,
                                 128.0f
                             };
-                            if (enemies[i].facingLeft)
+                            if (GAME.enemies[i].facingLeft)
                                 enemySource.width = -enemySource.width;
 
                             Rectangle enemyDestination = {
-                                enemies[i].body.position.x - 48.0f,
-                                enemies[i].body.position.y - 48.0f,
+                                GAME.enemies[i].body.position.x - 48.0f,
+                                GAME.enemies[i].body.position.y - 48.0f,
                                 96.0f,
                                 96.0f
                             };
