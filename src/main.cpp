@@ -23,18 +23,20 @@ enum TileType { FLOOR, WALL, WATER };
 //------------------------------------------------------------------------------------------
 // INICIO DAS STRUCTS
 
-// Caixa da hitbox geral (retângulos, "sem" rotação)
+// Caixa da hitbox geral (retângulos)
 struct Collider {
     Vector2 size   = { 24, 16 };   // largura e altura da caixa
     Vector2 offset = { 0, 24 };    // deslocamento a partir do centro da entidade
 };
 
+// struct que guarda a posição, a velocidade e a hitbox (collider) de cada entidade do jogo 
 struct Entity {
     Vector2 position = { 0, 0 };
     float speed = 5.0f;
     Collider collider;
 };
 
+// Objetos de dano arremessados, com posição independente da entidade atacante
 struct Projectile {
     Entity body;
     Vector2 direction = { 0, 0 };
@@ -43,6 +45,7 @@ struct Projectile {
     int life = 1;
 };
 
+// Toda entidade com movimento e IA próprios com objetivo de matar o player
 struct Enemy {
     Entity body = {.speed = 2.0f};
     int healthPoints = 50;
@@ -52,6 +55,7 @@ struct Enemy {
     bool facingLeft = false;
 };
 
+// ESTRUTURA DE CONFIGURAÇÕES GERAIS DO JOGO
 struct GameStructure {
     GameState gameState = PLAYING;      // variável que guarda o estado do jogo para recursos de menu e mapa
     static const int TILE = 32;         // tamanho de cada "quadrado" da matriz em pixels
@@ -80,9 +84,11 @@ struct GameStructure {
     vector<Projectile> projectiles;
     vector<Enemy> enemies;
 };
-
+// Instância que guarda as configurações do jogo
 GameStructure GAME;
 
+
+// struct de cada jogador
 struct Players {
     Entity body = {.position = GAME.world.Center};
     int healthPoints = 100;
@@ -95,9 +101,10 @@ struct Players {
     int currentFrame = 0;
     float frameTimer = 0.0f;
 };
-
+// Player 1
 Players player;
 
+// struct que guarda cada opção de animação das skins do jogador (idle, run, attack e dead)
 struct PlayerSprites {
     Texture2D idle;
     Texture2D run;
@@ -128,6 +135,8 @@ bool isWall(float x, float y) {
     return tileAt(tileX, tileY) == WALL;
 }
 
+
+// pega a caixa de hitbox atual do collider de acordo com a posição
 Rectangle getHitbox(Vector2 pos, const Collider& c) {
     return {
         pos.x + c.offset.x - c.size.x/2,
