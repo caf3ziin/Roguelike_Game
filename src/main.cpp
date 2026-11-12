@@ -63,6 +63,8 @@ struct GameStructure {
     static const int MAP_H = 94;        // altura (height) do mapa em tiles ("quadrados") na matriz do jogo
     // mundo em pixels = MAP_W * TILE = 3008 pixels
 
+    bool debugModeON = false;
+
     // unsigned = não existem valores negativos
     // variável da seed da run
     unsigned int seed;
@@ -110,6 +112,7 @@ struct PlayerSprites {
     Texture2D run;
     Texture2D attack;
     Texture2D dead;
+    Vector2 offset = { 4.0f, 0.0f };    // ajuste do boneco dentro do frame
 };
 
 PlayerSprites kitsuneSprites;
@@ -385,6 +388,9 @@ int main() {
     int enemyCurrentFrame = 0;
     float enemyFrameTimer = 0.0f;
 
+    player.body.collider.size =     { 32.0f, 64.0f };
+    player.body.collider.offset =   { 0.0f, 24.0f };
+
     //--------------------------------------------------------------------------------------
 
     // Main game loop
@@ -395,6 +401,8 @@ int main() {
         // Update your variables here
 
         player.frameTimer += GetFrameTime();
+
+        if (IsKeyPressed(KEY_F1)) GAME.debugModeON = (GAME.debugModeON + 1) % 2;
 
         if (player.frameTimer >= frameDuration) {
             player.frameTimer = 0.0f;
@@ -527,24 +535,35 @@ int main() {
                             128.0f,
                             128.0f
                         };
+
                         if (player.facingLeft)
                             playerSource.width = -playerSource.width;
+                        
+                        const float SPRITE_SIZE = 96.0f;
+                        Vector2 off = getPlayerSprites().offset;
+                        float dir = player.facingLeft ? -1.0f : 1.0f;
 
                         Rectangle playerDestination = {
-                            player.body.position.x - 48.0f,
-                            player.body.position.y - 48.0f,
-                            96.0f,
-                            96.0f
+                            player.body.position.x + off.x * dir,
+                            player.body.position.y + off.y,
+                            SPRITE_SIZE,
+                            SPRITE_SIZE
                         };
 
                         DrawTexturePro(
                             getPlayerTexture(),
                             playerSource,
                             playerDestination,
-                            (Vector2){0.0f, 0.0f},
+                            (Vector2){ SPRITE_SIZE / 2.0f, SPRITE_SIZE / 2.0f },
                             0.0f,
                             WHITE
                         );
+                        
+                        if (GAME.debugModeON) {
+                            DrawRectangleLinesEx(getHitbox(player.body.position, player.body.collider), 2.0f, ORANGE);
+                            DrawLine(player.body.position.x, player.body.position.y - 60,
+                                    player.body.position.x, player.body.position.y + 60, GREEN);
+                        }
                 
                         for (int i = 0; i < enemiesAmount; i++) {
                             Rectangle enemySource = {
@@ -583,7 +602,7 @@ int main() {
                     }
                 EndMode2D();
             }
-            DrawLineV(GAME.screen.Center, mouseScreen, RED);
+            if (GAME.debugModeON) DrawLineV(GAME.screen.Center, mouseScreen, RED);
             DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
         EndDrawing();
     }
