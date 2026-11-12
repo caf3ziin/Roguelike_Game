@@ -5,13 +5,10 @@
 #include <random>
 #include <ctime>
 
-#define MAX_FRAME_SPEED     15
-#define MIN_FRAME_SPEED      1
 
 using namespace std;
 
-random_device rd; 
-mt19937 gen(rd()); 
+mt19937 gen{}; 
 
 //-----------------------------------------------------------------------------------------
 // ENUMS
@@ -26,33 +23,47 @@ enum TileType { FLOOR, WALL, WATER };
 //------------------------------------------------------------------------------------------
 // INICIO DAS STRUCTS
 
-struct Projectile {
-    Vector2 position;
-    Vector2 direction;
-    float speed, screenTime;
-    int damage, life;
+// Caixa da hitbox geral (retângulos)
+struct Collider {
+    Vector2 size   = { 24, 16 };   // largura e altura da caixa
+    Vector2 offset = { 0, 24 };    // deslocamento a partir do centro da entidade
 };
 
-struct Enemy {
-    EnemyState enemyState = ROAMING;
+// struct que guarda a posição, a velocidade e a hitbox (collider) de cada entidade do jogo 
+struct Entity {
+    Vector2 position = { 0, 0 };
+    float speed = 5.0f;
+    Collider collider;
+};
 
+// Objetos de dano arremessados, com posição independente da entidade atacante
+struct Projectile {
+    Entity body;
+    Vector2 direction = { 0, 0 };
+    float screenTime = 0.0f;
+    int damage = 10;
+    int life = 1;
+};
+
+// Toda entidade com movimento e IA próprios com objetivo de matar o player
+struct Enemy {
+    Entity body = {.speed = 2.0f};
     int healthPoints = 50;
     int powerPoints = 5;
     int attackRange = 5;
-    int speed = 2;
 
-    Vector2 position;
     bool facingLeft = false;
-
-    float roamingMovementTimer = 0.0f;
 };
 
+// ESTRUTURA DE CONFIGURAÇÕES GERAIS DO JOGO
 struct GameStructure {
     GameState gameState = PLAYING;      // variável que guarda o estado do jogo para recursos de menu e mapa
     static const int TILE = 32;         // tamanho de cada "quadrado" da matriz em pixels
     static const int MAP_W = 94;        // largura (width) do mapa em tiles ("quadrados") na matriz do jogo
     static const int MAP_H = 94;        // altura (height) do mapa em tiles ("quadrados") na matriz do jogo
     // mundo em pixels = MAP_W * TILE = 3008 pixels
+
+    bool debugModeON = false;
 
     // unsigned = não existem valores negativos
     // variável da seed da run
@@ -75,14 +86,15 @@ struct GameStructure {
     vector<Projectile> projectiles;
     vector<Enemy> enemies;
 };
-
+// Instância que guarda as configurações do jogo
 GameStructure GAME;
 
-struct Players {
-    int healthPoints = 100;
-    int speed = 5;
 
-    Vector2 position = GAME.world.Center;
+// struct de cada jogador
+struct Players {
+    Entity body = {.position = GAME.world.Center};
+    int healthPoints = 100;
+
     bool facingLeft = false;
 
     PlayerSkin skin = KITSUNE;
@@ -91,14 +103,16 @@ struct Players {
     int currentFrame = 0;
     float frameTimer = 0.0f;
 };
-
+// Player 1
 Players player;
 
+// struct que guarda cada opção de animação das skins do jogador (idle, run, attack e dead)
 struct PlayerSprites {
     Texture2D idle;
     Texture2D run;
     Texture2D attack;
     Texture2D dead;
+    Vector2 offset = { 4.0f, 0.0f };    // ajuste do boneco dentro do frame
 };
 
 PlayerSprites kitsuneSprites;
@@ -110,13 +124,13 @@ PlayerSprites soldierSprites;
 //------------------------------------------------------------------------------------------
 // INICIO DAS FUNCOES
 
-
-vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                // Vetor unidimensional que guarda os tipos de tiles
+// Vetor unidimensional que guarda os tipos de tiles
+vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                
 TileType& tileAt(int x, int y) { return tiles[y * GAME.MAP_W + x]; }        // Função que retorna o tipo do tile na posição (x, y)
 
 
 // Verifica automaticamente se a posição (x, y) é uma parede na matriz do jogo
-bool isWall(int x, int y) {
+bool isWall(float x, float y) {
     int tileX = (int)(x / GAME.TILE), tileY = (int)(y / GAME.TILE);
 
     if (tileX < 0 || tileY < 0 || tileX >= GAME.MAP_W || tileY >= GAME.MAP_H) return true;
@@ -125,19 +139,30 @@ bool isWall(int x, int y) {
 }
 
 
+// pega a caixa de hitbox atual do collider de acordo com a posição
+Rectangle getHitbox(Vector2 pos, const Collider& c) {
+    return {
+        pos.x + c.offset.x - c.size.x/2,
+        pos.y + c.offset.y - c.size.y/2,
+        c.size.x,
+        c.size.y
+    };
+}
+
+
 // Gera os inimigos na volta do personagem
 void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
-    uniform_int_distribution<int> ranHeight(0, GAME.MAP_W * GAME.TILE - 40); 
-    uniform_int_distribution<int> ranWidth(0, GAME.MAP_H * GAME.TILE - 40); 
+    uniform_int_distribution<int> ranHeight(0, GAME.MAP_H * GAME.TILE - 40); 
+    uniform_int_distribution<int> ranWidth(0, GAME.MAP_W * GAME.TILE - 40); 
 
     for(int i = 0; i < enemiesAmount; i++){
         do {
-            enemies[i].position = {
+            enemies[i].body.position = {
                 (float)ranWidth(gen),
                 (float)ranHeight(gen)
             };
 
-        } while (Vector2Distance(enemies[i].position, player.position) < 150);
+        } while (Vector2Distance(enemies[i].body.position, player.body.position) < 150);
     }
 
 }
@@ -146,68 +171,33 @@ void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
 void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
     Enemy& enemy = enemies[enemyIndex];
 
-    enemy.roamingMovementTimer += GetFrameTime();
+    Vector2 direction = Vector2Subtract(player.body.position, enemy.body.position);
 
-    if(enemy.enemyState == EnemyState::ROAMING){
-        if(enemy.roamingMovementTimer < 2.0f)
-            return;
-        
-        enemy.roamingMovementTimer = 0.0f;
+    if (direction.x < 0)
+        enemy.facingLeft = true;
+    else if (direction.x > 0)
+        enemy.facingLeft = false;
 
-        uniform_int_distribution<int> ranDirection(0, 3); 
-        uniform_int_distribution<int> ranDistance(1, 5); 
-        
-        int direction = ranDirection(gen);
-        int distance = ranDistance(gen) * GAME.TILE;
-
-        Vector2 movement {0.0f, 0.0f};
-
-        switch (direction){
-            case 0: movement.x = distance; break;
-            case 1: movement.x = -distance; break;
-            case 2: movement.y = distance; break;
-            case 3: movement.y = -distance; break;
-        }
-
-        Vector2 nextPosition = Vector2Add(enemy.position, movement);
-
-        nextPosition.x = Clamp(nextPosition.x, 0.0f, (float)GAME.world.Width);
-        nextPosition.y = Clamp(nextPosition.y, 0.0f, (float)GAME.world.Height);
-
-        enemy.position = nextPosition;
+    if (Vector2Length(direction) == 0.0f)
         return;
-    }
-
-    Vector2 direction = Vector2Subtract(player.position, enemy.position);
-
-    if(enemy.enemyState == EnemyState::SEARCHING){
-        if (direction.x < 0)
-            enemy.facingLeft = true;
-        else if (direction.x > 0)
-            enemy.facingLeft = false;
-        
-        if (Vector2Length(direction) == 0.0f)
-            return;
-    }
 
     direction = Vector2Normalize(direction);
 
-    Vector2 nextPosition = Vector2Add(enemy.position, Vector2Scale(direction, (float)enemy.speed));
-    
+    Vector2 nextPosition = Vector2Add(enemy.body.position, Vector2Scale(direction, (float)enemy.body.speed)
+    );
 
-        
     const float minimumDistance = 15.0f;
 
     for (int i = 0; i < enemiesAmount; i++) {
         if (i == enemyIndex)
             continue;
 
-        if (Vector2Distance(nextPosition, enemies[i].position) < minimumDistance) {
+        if (Vector2Distance(nextPosition, enemies[i].body.position) < minimumDistance) {
             return;
         }
     }
 
-    enemy.position = nextPosition;
+    enemy.body.position = nextPosition;
 }
 
 PlayerSprites& getPlayerSprites() {
@@ -314,7 +304,7 @@ void setPlayerAnimation(PlayerAnimation animation) {
 int main() {
 
     const int enemiesAmount = 20;
-    vector<Enemy> enemies(enemiesAmount);
+    GAME.enemies.resize(enemiesAmount);
     
     // Initialization
     //-------------------------------------------------------------------------------------
@@ -327,16 +317,23 @@ int main() {
     {
         unsigned int seed = (unsigned int)time(nullptr);       // a seed gerada é de acordo com o horário da execução no sistema
         SetRandomSeed(seed);
+        gen.seed(seed);
         GAME.seed = seed;   // Guarda a seed na struct do jogo, e a variável local é jogada fora
     }
     printSeedDebug(GAME.seed);
 
-    createEnemies(enemies, enemiesAmount);
+    createEnemies(GAME.enemies, enemiesAmount);
 
     for (int i = 0; i < tiles.size(); i++) {
-        int percentage = GetRandomValue(1, 100);
-        if (percentage <= 15)
-            tiles[i] = WALL;
+        if (GetRandomValue(1, 100) <= 15) {
+            int tx = i % GAME.MAP_W;
+            int ty = i / GAME.MAP_W;
+            Vector2 pos = {tx * (float)GAME.TILE, ty * (float)GAME.TILE};
+            float RADIUS = GAME.TILE * 10.0f;
+
+            if (Vector2DistanceSqr(player.body.position, pos) >= RADIUS * RADIUS)
+                tiles[i] = WALL;
+        }
     }
 
     //-------------------------------------------------------------------------------------
@@ -375,9 +372,6 @@ int main() {
     //-------------------------------------------------------------------------------------
     // variables
     Texture2D background = LoadTexture("resources/backgrounds/grassBackground.png");
-    Image playerImage = LoadImage("resources/sprites/player/kitsune/Run.png");
-    ImageColorReplace(&playerImage, WHITE, BLANK);
-    UnloadImage(playerImage);
     Image enemyImage = LoadImage("resources/sprites/enemy/zombie/Walk.png");
     ImageColorReplace(&enemyImage, WHITE, BLANK);
     Texture2D enemyZombie = LoadTextureFromImage(enemyImage);
@@ -385,7 +379,7 @@ int main() {
     SetTextureWrap(background, TEXTURE_WRAP_REPEAT);
     Camera2D camera = {0};
 
-    camera.target = (Vector2){player.position.x, player.position.y};
+    camera.target = (Vector2){player.body.position.x, player.body.position.y};
     camera.offset = GAME.screen.Center;
     camera.rotation = 0.0f;
     camera.zoom = 1.0f;
@@ -393,6 +387,9 @@ int main() {
     float frameDuration = 0.1f;
     int enemyCurrentFrame = 0;
     float enemyFrameTimer = 0.0f;
+
+    player.body.collider.size =     { 32.0f, 64.0f };
+    player.body.collider.offset =   { 0.0f, 24.0f };
 
     //--------------------------------------------------------------------------------------
 
@@ -404,6 +401,9 @@ int main() {
         // Update your variables here
 
         player.frameTimer += GetFrameTime();
+
+        if (IsKeyPressed(KEY_F1)) GAME.debugModeON = (GAME.debugModeON + 1) % 2;
+        if (IsKeyPressed(KEY_F2)) player.skin = (PlayerSkin)((player.skin + 1) % 3);
 
         if (player.frameTimer >= frameDuration) {
             player.frameTimer = 0.0f;
@@ -435,11 +435,11 @@ int main() {
                 setPlayerAnimation(PLAYER_IDLE);
             }
 
-            player.position.x += movement.x * player.speed;
-            player.position.y += movement.y * player.speed;
+            player.body.position.x += movement.x * player.body.speed;
+            player.body.position.y += movement.y * player.body.speed;
 
-            player.position.x = Clamp(player.position.x, 0.0f, (float)GAME.world.Width);
-            player.position.y = Clamp(player.position.y, 0.0f, (float)GAME.world.Height);
+            player.body.position.x = Clamp(player.body.position.x, 0.0f, (float)GAME.world.Width);
+            player.body.position.y = Clamp(player.body.position.y, 0.0f, (float)GAME.world.Height);
         }
 
         if (IsKeyPressed(KEY_TAB)) {
@@ -452,25 +452,24 @@ int main() {
         if (IsKeyPressed(KEY_ESCAPE)) GAME.gameState = GameState::PLAYING;
         
         for (int i = 0; i < enemiesAmount; i++) {
-            enemyMovement(enemies, i, enemiesAmount);
+            enemyMovement(GAME.enemies, i, enemiesAmount);
         }
 
         Vector2 mouseScreen = GetMousePosition();
         Vector2 mouseWorld = GetScreenToWorld2D(mouseScreen, camera);
 
-        camera.target = (Vector2){player.position.x, player.position.y};
+        camera.target = (Vector2){player.body.position.x, player.body.position.y};
 
         if (GAME.gameState == PLAYING) {
             if (IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.position));
+                Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.body.position));
 
-                GAME.projectiles.push_back({
-                    player.position,
-                    direction,
-                    10.0f,
-                    0,
-                    0
-                });
+                Projectile p;
+                p.body.position = player.body.position;
+                p.body.speed    = 10.0f;
+                p.direction     = direction;
+                p.damage        = 10;
+                GAME.projectiles.push_back(p);
             }
 
             for (int i = (int)GAME.projectiles.size() - 1; i >= 0; i--) {
@@ -482,12 +481,7 @@ int main() {
                     continue;
                 }
 
-                bullet.position = Vector2Add(bullet.position, Vector2Scale(bullet.direction, bullet.speed));
-            }
-
-            if (player.frameTimer >= frameDuration) {
-                player.frameTimer = 0.0f;
-                player.currentFrame = (player.currentFrame + 1) % 8;
+                bullet.body.position = Vector2Add(bullet.body.position, Vector2Scale(bullet.direction, bullet.body.speed));
             }
 
             enemyFrameTimer += GetFrameTime();
@@ -497,11 +491,6 @@ int main() {
             }
         }
 
-        for(int i = 0; i < enemiesAmount; i++){
-            if(abs(enemies[i].position - player.position) > 10>GAME.TILE){
-                
-            }
-        }
         //----------------------------------------------------------------------------------
 
         // Draw
@@ -547,24 +536,35 @@ int main() {
                             128.0f,
                             128.0f
                         };
+
                         if (player.facingLeft)
                             playerSource.width = -playerSource.width;
+                        
+                        const float SPRITE_SIZE = 96.0f;
+                        Vector2 off = getPlayerSprites().offset;
+                        float dir = player.facingLeft ? -1.0f : 1.0f;
 
                         Rectangle playerDestination = {
-                            player.position.x - 48.0f,
-                            player.position.y - 48.0f,
-                            96.0f,
-                            96.0f
+                            player.body.position.x + off.x * dir,
+                            player.body.position.y + off.y,
+                            SPRITE_SIZE,
+                            SPRITE_SIZE
                         };
 
                         DrawTexturePro(
                             getPlayerTexture(),
                             playerSource,
                             playerDestination,
-                            (Vector2){0.0f, 0.0f},
+                            (Vector2){ SPRITE_SIZE / 2.0f, SPRITE_SIZE / 2.0f },
                             0.0f,
                             WHITE
                         );
+                        
+                        if (GAME.debugModeON) {
+                            DrawRectangleLinesEx(getHitbox(player.body.position, player.body.collider), 2.0f, ORANGE);
+                            DrawLine(player.body.position.x, player.body.position.y - 60,
+                                    player.body.position.x, player.body.position.y + 60, GREEN);
+                        }
                 
                         for (int i = 0; i < enemiesAmount; i++) {
                             Rectangle enemySource = {
@@ -573,12 +573,12 @@ int main() {
                                 128.0f,
                                 128.0f
                             };
-                            if (enemies[i].facingLeft)
+                            if (GAME.enemies[i].facingLeft)
                                 enemySource.width = -enemySource.width;
 
                             Rectangle enemyDestination = {
-                                enemies[i].position.x - 48.0f,
-                                enemies[i].position.y - 48.0f,
+                                GAME.enemies[i].body.position.x - 48.0f,
+                                GAME.enemies[i].body.position.y - 48.0f,
                                 96.0f,
                                 96.0f
                             };
@@ -594,7 +594,7 @@ int main() {
                         }
                         if (!GAME.projectiles.empty()) {
                             for (const auto bullet : GAME.projectiles) {
-                                Rectangle bulletSprite = {bullet.position.x, bullet.position.y, 8.0f, 4.0f};
+                                Rectangle bulletSprite = {bullet.body.position.x, bullet.body.position.y, 8.0f, 4.0f};
                                 DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
                             }
                         }
@@ -603,7 +603,7 @@ int main() {
                     }
                 EndMode2D();
             }
-            DrawLineV(GAME.screen.Center, mouseScreen, RED);
+            if (GAME.debugModeON) DrawLineV(GAME.screen.Center, mouseScreen, RED);
             DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
         EndDrawing();
     }
