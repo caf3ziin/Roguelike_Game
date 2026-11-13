@@ -163,6 +163,9 @@ void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
             };
 
         } while (Vector2Distance(enemies[i].body.position, player.body.position) < 150);
+
+        enemies[i].body.collider.offset = { 0, 25 };
+        enemies[i].body.collider.size   = { 20, 50 };
     }
 
 }
@@ -302,6 +305,13 @@ void setPlayerAnimation(PlayerAnimation animation) {
 //------------------------------------------------------------------------------------
 
 int main() {
+
+    Projectile tempbullet;
+    tempbullet.body.position = GAME.world.Center;
+    tempbullet.direction = {1, 0};
+    tempbullet.damage = 0;
+    tempbullet.body.collider.offset = { 0, 0 };
+    tempbullet.body.collider.size = { 10, 8 };
 
     const int enemiesAmount = 20;
     GAME.enemies.resize(enemiesAmount);
@@ -469,6 +479,8 @@ int main() {
                 p.body.speed    = 10.0f;
                 p.direction     = direction;
                 p.damage        = 10;
+                p.body.collider.offset = { 0, 0 };
+                p.body.collider.size = { 10, 8 };
                 GAME.projectiles.push_back(p);
             }
 
@@ -591,13 +603,27 @@ int main() {
                                 0.0f,
                                 WHITE
                             );
+
+                            if (GAME.debugModeON)
+                                DrawRectangleLinesEx(getHitbox(GAME.enemies[i].body.position, GAME.enemies[i].body.collider), 1.0f, ORANGE);
                         }
                         if (!GAME.projectiles.empty()) {
                             for (const auto bullet : GAME.projectiles) {
                                 Rectangle bulletSprite = {bullet.body.position.x, bullet.body.position.y, 8.0f, 4.0f};
                                 DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
+
+                                if (GAME.debugModeON)
+                                    DrawRectangleLinesEx(getHitbox(bullet.body.position, bullet.body.collider), 1.0f, ORANGE);
                             }
                         }
+
+
+                        // tempbullet DEBUG DEBUG DEBUG -----------------------------------------------------------
+                        Rectangle tempBulletSprite = {tempbullet.body.position.x, tempbullet.body.position.y, 8.0f, 4.0f};
+                        DrawRectanglePro(tempBulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(tempbullet.direction.y, tempbullet.direction.x) * RAD2DEG), YELLOW);
+                        DrawRectangleLinesEx(getHitbox(tempbullet.body.position, tempbullet.body.collider), 1.0f, ORANGE);
+                        // DEBUG DEBUG DEBUG ----------------------------------------------------------------------
+
                     } else if (GAME.gameState == INVENTORY) {
                         DrawRectangle((camera.target.x - GAME.screen.Center.x + GAME.screen.Width/10.0f), (camera.target.y - GAME.screen.Center.y + GAME.screen.Height/10.0f), 8.0f * GAME.screen.Width/10.0f, 8.0f * GAME.screen.Height/10.0f, BLACK);
                     }
