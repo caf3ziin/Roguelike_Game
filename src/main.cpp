@@ -6,13 +6,10 @@
 #include <random>
 #include <ctime>
 
-#define MAX_FRAME_SPEED     15
-#define MIN_FRAME_SPEED      1
 
 using namespace std;
 
-random_device rd; 
-mt19937 gen(rd()); 
+mt19937 gen{}; 
 
 //-----------------------------------------------------------------------------------------
 // ENUMS
@@ -28,23 +25,38 @@ enum TileType { FLOOR, WALL, WATER };
 //------------------------------------------------------------------------------------------
 // INICIO DAS STRUCTS
 
-struct Projectile {
-    Vector2 position;
-    Vector2 direction;
-    float speed, screenTime;
-    int damage, life;
+// Caixa da hitbox geral (retângulos)
+struct Collider {
+    Vector2 size   = { 24, 16 };   // largura e altura da caixa
+    Vector2 offset = { 0, 24 };    // deslocamento a partir do centro da entidade
 };
 
+// struct que guarda a posição, a velocidade e a hitbox (collider) de cada entidade do jogo 
+struct Entity {
+    Vector2 position = { 0, 0 };
+    float speed = 5.0f;
+    Collider collider;
+};
+
+// Objetos de dano arremessados, com posição independente da entidade atacante
+struct Projectile {
+    Entity body;
+    Vector2 direction = { 0, 0 };
+    float screenTime = 0.0f;
+    int damage = 10;
+    int life = 1;
+};
+
+// Toda entidade com movimento e IA próprios com objetivo de matar o player
 struct Enemy {
     EnemyType type = ZOMBIE;
     EnemyState enemyState = ROAMING;
 
+    Entity body = {.speed = 2.0f};
     int healthPoints = 50;
     int powerPoints = 5;
     int attackRange = 5;
-    int speed = 2;
 
-    Vector2 position;
     bool facingLeft = false;
 
     float roamingMovementTimer = 0.0f;
@@ -54,12 +66,15 @@ struct Enemy {
     float idleTimer = 0.0f;
 };
 
+// ESTRUTURA DE CONFIGURAÇÕES GERAIS DO JOGO
 struct GameStructure {
     GameState gameState = MENU;      // variável que guarda o estado do jogo para recursos de menu e mapa
     static const int TILE = 32;         // tamanho de cada "quadrado" da matriz em pixels
     static const int MAP_W = 94;        // largura (width) do mapa em tiles ("quadrados") na matriz do jogo
     static const int MAP_H = 94;        // altura (height) do mapa em tiles ("quadrados") na matriz do jogo
     // mundo em pixels = MAP_W * TILE = 3008 pixels
+
+    bool debugModeON = false;
 
     // unsigned = não existem valores negativos
     // variável da seed da run
@@ -83,10 +98,13 @@ struct GameStructure {
     vector<Enemy> enemies;
     int gold = 0;
 };
-
+// Instância que guarda as configurações do jogo
 GameStructure GAME;
 
+
+// struct de cada jogador
 struct Players {
+    Entity body = {.position = GAME.world.Center};
     int healthPoints = 100;
     int speed = 5;
     int attackPower = 10;
@@ -95,7 +113,6 @@ struct Players {
     int defenseLevel = 0;
     int movementLevel = 0;
 
-    Vector2 position = GAME.world.Center;
     bool facingLeft = false;
 
     PlayerSkin skin = KITSUNE;
@@ -104,7 +121,7 @@ struct Players {
     int currentFrame = 0;
     float frameTimer = 0.0f;
 };
-
+// Player 1
 Players player;
 
 void drawShieldIcon(Vector2 center, Color color) {
@@ -175,6 +192,7 @@ struct PlayerSprites {
     Texture2D run;
     Texture2D attack;
     Texture2D dead;
+    Vector2 offset = { 4.0f, 0.0f };    // ajuste do boneco dentro do frame
 };
 
 PlayerSprites kitsuneSprites;
@@ -194,13 +212,13 @@ EnemySprites zombieSprites;
 //------------------------------------------------------------------------------------------
 // INICIO DAS FUNCOES
 
-
-vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                // Vetor unidimensional que guarda os tipos de tiles
+// Vetor unidimensional que guarda os tipos de tiles
+vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                
 TileType& tileAt(int x, int y) { return tiles[y * GAME.MAP_W + x]; }        // Função que retorna o tipo do tile na posição (x, y)
 
 
 // Verifica automaticamente se a posição (x, y) é uma parede na matriz do jogo
-bool isWall(int x, int y) {
+bool isWall(float x, float y) {
     int tileX = (int)(x / GAME.TILE), tileY = (int)(y / GAME.TILE);
 
     if (tileX < 0 || tileY < 0 || tileX >= GAME.MAP_W || tileY >= GAME.MAP_H) return true;
@@ -209,19 +227,33 @@ bool isWall(int x, int y) {
 }
 
 
+// pega a caixa de hitbox atual do collider de acordo com a posição
+Rectangle getHitbox(Vector2 pos, const Collider& c) {
+    return {
+        pos.x + c.offset.x - c.size.x/2,
+        pos.y + c.offset.y - c.size.y/2,
+        c.size.x,
+        c.size.y
+    };
+}
+
+
 // Gera os inimigos na volta do personagem
 void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
-    uniform_int_distribution<int> ranHeight(0, GAME.MAP_W * GAME.TILE - 40); 
-    uniform_int_distribution<int> ranWidth(0, GAME.MAP_H * GAME.TILE - 40); 
+    uniform_int_distribution<int> ranHeight(0, GAME.MAP_H * GAME.TILE - 40); 
+    uniform_int_distribution<int> ranWidth(0, GAME.MAP_W * GAME.TILE - 40); 
 
     for(int i = 0; i < enemiesAmount; i++){
         do {
-            enemies[i].position = {
+            enemies[i].body.position = {
                 (float)ranWidth(gen),
                 (float)ranHeight(gen)
             };
 
-        } while (Vector2Distance(enemies[i].position, player.position) < 150);
+        } while (Vector2Distance(enemies[i].body.position, player.body.position) < 150);
+
+        enemies[i].body.collider.offset = { 0, 25 };
+        enemies[i].body.collider.size   = { 20, 50 };
     }
 
 }
@@ -230,12 +262,14 @@ void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
 void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
     Enemy& enemy = enemies[enemyIndex];
 
-    if (enemy.enemyState == EnemyState::IDLE)
+    if (enemy.enemyState == EnemyState::IDLE ||
+        enemy.enemyState == EnemyState::ATTACKING)
         return;
 
-    if(enemy.enemyState == EnemyState::ROAMING){
-        const float deltaTime = GetFrameTime();
+    const float deltaTime = GetFrameTime();
+    Vector2 direction = { 0.0f, 0.0f };
 
+    if (enemy.enemyState == EnemyState::ROAMING) {
         if (enemy.roamingMovementTimer <= 0.0f) {
             uniform_int_distribution<int> ranDirection(0, 3);
             uniform_real_distribution<float> ranDuration(1.0f, 3.0f);
@@ -254,55 +288,38 @@ void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
         }
 
         enemy.roamingMovementTimer -= deltaTime;
+        direction = enemy.roamingDirection;
+    } else if (enemy.enemyState == EnemyState::SEARCHING) {
+        direction = Vector2Subtract(player.body.position, enemy.body.position);
+    }
 
-        Vector2 movement = Vector2Scale(
-            enemy.roamingDirection,
-            (float)enemy.speed * 60.0f * deltaTime
-        );
-        Vector2 nextPosition = Vector2Add(enemy.position, movement);
+    if (direction.x < 0.0f)
+        enemy.facingLeft = true;
+    else if (direction.x > 0.0f)
+        enemy.facingLeft = false;
 
-        nextPosition.x = Clamp(nextPosition.x, 0.0f, (float)GAME.world.Width);
-        nextPosition.y = Clamp(nextPosition.y, 0.0f, (float)GAME.world.Height);
-
-        enemy.position = nextPosition;
+    if (Vector2Length(direction) == 0.0f)
         return;
-    }
-
-    Vector2 direction = Vector2Subtract(player.position, enemy.position);
-
-    if(enemy.enemyState == EnemyState::SEARCHING){
-        if (direction.x < 0)
-            enemy.facingLeft = true;
-        else if (direction.x > 0)
-            enemy.facingLeft = false;
-        
-        if (Vector2Length(direction) == 0.0f)
-            return;
-    }
 
     direction = Vector2Normalize(direction);
 
-    Vector2 nextPosition = Vector2Add(enemy.position, Vector2Scale(direction, (float)enemy.speed));
-    
+    Vector2 nextPosition = Vector2Add(
+        enemy.body.position,
+        Vector2Scale(direction, enemy.body.speed * 60.0f * deltaTime)
+    );
 
-        
     const float minimumDistance = 15.0f;
 
     for (int i = 0; i < enemiesAmount; i++) {
         if (i == enemyIndex)
             continue;
 
-        if (Vector2Distance(nextPosition, enemies[i].position) < minimumDistance) {
+        if (Vector2Distance(nextPosition, enemies[i].body.position) < minimumDistance) {
             return;
         }
     }
 
-    if (enemy.enemyState == EnemyState::ATTACKING) {
-        
-        return;
-}
-
-    enemy.position = nextPosition;
+    enemy.body.position = nextPosition;
 }
 
 PlayerSprites& getPlayerSprites() {
@@ -416,8 +433,15 @@ EnemySprites& getEnemySprites(EnemyType type) {
 
 int main() {
 
+    Projectile tempbullet;
+    tempbullet.body.position = GAME.world.Center;
+    tempbullet.direction = {1, 0};
+    tempbullet.damage = 0;
+    tempbullet.body.collider.offset = { 0, 0 };
+    tempbullet.body.collider.size = { 10, 8 };
+
     const int enemiesAmount = 20;
-    vector<Enemy> enemies(enemiesAmount);
+    GAME.enemies.resize(enemiesAmount);
     
     // Initialization
     //-------------------------------------------------------------------------------------
@@ -486,10 +510,14 @@ int main() {
     Image playerImage = LoadImage("resources/sprites/player/kitsune/Run.png");
     ImageColorReplace(&playerImage, WHITE, BLANK);
     UnloadImage(playerImage);
+    Image enemyImage = LoadImage("resources/sprites/enemy/zombie/Walk.png");
+    ImageColorReplace(&enemyImage, WHITE, BLANK);
+    Texture2D enemyZombie = LoadTextureFromImage(enemyImage);
+    UnloadImage(enemyImage);
     SetTextureWrap(background, TEXTURE_WRAP_REPEAT);
     Camera2D camera = {0};
 
-    camera.target = (Vector2){player.position.x, player.position.y};
+    camera.target = (Vector2){player.body.position.x, player.body.position.y};
     camera.offset = GAME.screen.Center;
     camera.rotation = 0.0f;
     camera.zoom = 1.0f;
@@ -559,6 +587,8 @@ int main() {
     const Rectangle musicSlider = { 500.0f, 330.0f, 280.0f, 8.0f };
     const Rectangle musicSliderHitArea = { 475.0f, 300.0f, 330.0f, 70.0f };
 
+    player.body.collider.size =     { 32.0f, 64.0f };
+    player.body.collider.offset =   { 0.0f, 24.0f };
 
     //--------------------------------------------------------------------------------------
 
@@ -578,7 +608,7 @@ int main() {
                 GAME.seed = seed; // Guarda a seed na struct do jogo, e a variável local é jogada fora
                 printSeedDebug(GAME.seed);
 
-                createEnemies(enemies, enemiesAmount);
+                createEnemies(GAME.enemies, enemiesAmount);
 
                 for (int i = 0; i < tiles.size(); i++) {
                     int percentage = GetRandomValue(1, 100);
@@ -668,6 +698,13 @@ int main() {
                 skillTreeDragging = false;
             }
         }
+        if (IsKeyPressed(KEY_F1)) GAME.debugModeON = (GAME.debugModeON + 1) % 2;
+        if (IsKeyPressed(KEY_F2)) player.skin = (PlayerSkin)((player.skin + 1) % 3);
+
+        if (player.frameTimer >= frameDuration) {
+            player.frameTimer = 0.0f;
+            player.currentFrame = (player.currentFrame + 1) % getPlayerFrameCount();
+        }
 
         if (GAME.gameState == PAUSED &&
             IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -743,11 +780,11 @@ int main() {
                 setPlayerAnimation(PLAYER_IDLE);
             }
 
-            player.position.x += movement.x * player.speed;
-            player.position.y += movement.y * player.speed;
+            player.body.position.x += movement.x * player.body.speed;
+            player.body.position.y += movement.y * player.body.speed;
 
-            player.position.x = Clamp(player.position.x, 0.0f, (float)GAME.world.Width);
-            player.position.y = Clamp(player.position.y, 0.0f, (float)GAME.world.Height);
+            player.body.position.x = Clamp(player.body.position.x, 0.0f, (float)GAME.world.Width);
+            player.body.position.y = Clamp(player.body.position.y, 0.0f, (float)GAME.world.Height);
         }
 
         if (IsKeyPressed(KEY_TAB)) {
@@ -768,7 +805,7 @@ int main() {
                 GAME.gameState = PAUSED;
         }
 
-        camera.target = player.position;
+        camera.target = player.body.position;
 
         Vector2 visibleWorldTopLeft = GetScreenToWorld2D(
             (Vector2){0.0f, 0.0f},
@@ -787,7 +824,7 @@ int main() {
 
         if (GAME.gameState == PLAYING) {
             for (int i = 0; i < enemiesAmount; i++) {
-                Enemy& enemy = enemies[i];
+                Enemy& enemy = GAME.enemies[i];
 
                 if (enemy.enemyState == EnemyState::ATTACKING) {
                     enemy.attackFrameTimer += GetFrameTime();
@@ -808,37 +845,40 @@ int main() {
                     if (enemy.idleTimer <= 0.0f)
                         enemy.enemyState = EnemyState::SEARCHING;
                 } else {
-                    float distance = Vector2Distance(enemy.position, player.position);
+                    float distance = Vector2Distance(enemy.body.position, player.body.position);
 
                     if (distance <= attackDistance) {
                         enemy.enemyState = EnemyState::ATTACKING;
                         enemy.attackFrame = 0;
                         enemy.attackFrameTimer = 0.0f;
-                    } else if (CheckCollisionPointRec(enemy.position, visibleWorld)) {
+                    } else if (CheckCollisionPointRec(enemy.body.position, visibleWorld)) {
                         enemy.enemyState = EnemyState::SEARCHING;
                     } else {
                         enemy.enemyState = EnemyState::ROAMING;
                     }
                 }
 
-                enemyMovement(enemies, i, enemiesAmount);
+                enemyMovement(GAME.enemies, i, enemiesAmount);
             }
         }
 
         Vector2 mouseScreen = GetMousePosition();
         Vector2 mouseWorld = GetScreenToWorld2D(mouseScreen, camera);
 
+        camera.target = (Vector2){player.body.position.x, player.body.position.y};
+
         if (GAME.gameState == PLAYING) {
             if (IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.position));
+                Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.body.position));
 
-                GAME.projectiles.push_back({
-                    player.position,
-                    direction,
-                    10.0f,
-                    0,
-                    0
-                });
+                Projectile p;
+                p.body.position = player.body.position;
+                p.body.speed    = 10.0f;
+                p.direction     = direction;
+                p.damage        = 10;
+                p.body.collider.offset = { 0, 0 };
+                p.body.collider.size = { 10, 8 };
+                GAME.projectiles.push_back(p);
             }
 
             for (int i = (int)GAME.projectiles.size() - 1; i >= 0; i--) {
@@ -850,12 +890,7 @@ int main() {
                     continue;
                 }
 
-                bullet.position = Vector2Add(bullet.position, Vector2Scale(bullet.direction, bullet.speed));
-            }
-
-            if (player.frameTimer >= frameDuration) {
-                player.frameTimer = 0.0f;
-                player.currentFrame = (player.currentFrame + 1) % 8;
+                bullet.body.position = Vector2Add(bullet.body.position, Vector2Scale(bullet.direction, bullet.body.speed));
             }
 
             enemyFrameTimer += GetFrameTime();
@@ -1005,34 +1040,45 @@ int main() {
                             128.0f,
                             128.0f
                         };
+
                         if (player.facingLeft)
                             playerSource.width = -playerSource.width;
+                        
+                        const float SPRITE_SIZE = 96.0f;
+                        Vector2 off = getPlayerSprites().offset;
+                        float dir = player.facingLeft ? -1.0f : 1.0f;
 
                         Rectangle playerDestination = {
-                            player.position.x - 48.0f,
-                            player.position.y - 48.0f,
-                            96.0f,
-                            96.0f
+                            player.body.position.x + off.x * dir,
+                            player.body.position.y + off.y,
+                            SPRITE_SIZE,
+                            SPRITE_SIZE
                         };
 
                         DrawTexturePro(
                             getPlayerTexture(),
                             playerSource,
                             playerDestination,
-                            (Vector2){0.0f, 0.0f},
+                            (Vector2){ SPRITE_SIZE / 2.0f, SPRITE_SIZE / 2.0f },
                             0.0f,
                             WHITE
                         );
+                        
+                        if (GAME.debugModeON) {
+                            DrawRectangleLinesEx(getHitbox(player.body.position, player.body.collider), 2.0f, ORANGE);
+                            DrawLine(player.body.position.x, player.body.position.y - 60,
+                                    player.body.position.x, player.body.position.y + 60, GREEN);
+                        }
                 
                         for (int i = 0; i < enemiesAmount; i++) {
-                            EnemySprites& sprites = getEnemySprites(enemies[i].type);
+                            EnemySprites& sprites = getEnemySprites(GAME.enemies[i].type);
                             Texture2D enemyTexture = sprites.walk;
                             int currentFrame = enemyCurrentFrame;
 
-                            if (enemies[i].enemyState == EnemyState::ATTACKING) {
+                            if (GAME.enemies[i].enemyState == EnemyState::ATTACKING) {
                                 enemyTexture = sprites.attack;
-                                currentFrame = enemies[i].attackFrame;
-                            } else if (enemies[i].enemyState == EnemyState::IDLE) {
+                                currentFrame = GAME.enemies[i].attackFrame;
+                            } else if (GAME.enemies[i].enemyState == EnemyState::IDLE) {
                                 currentFrame = 0;
                             }
 
@@ -1042,12 +1088,12 @@ int main() {
                                 128.0f,
                                 128.0f
                             };
-                            if (enemies[i].facingLeft)
+                            if (GAME.enemies[i].facingLeft)
                                 enemySource.width = -enemySource.width;
 
                             Rectangle enemyDestination = {
-                                enemies[i].position.x - 48.0f,
-                                enemies[i].position.y - 48.0f,
+                                GAME.enemies[i].body.position.x - 48.0f,
+                                GAME.enemies[i].body.position.y - 48.0f,
                                 96.0f,
                                 96.0f
                             };
@@ -1060,13 +1106,27 @@ int main() {
                                 0.0f,
                                 WHITE
                             );
+
+                            if (GAME.debugModeON)
+                                DrawRectangleLinesEx(getHitbox(GAME.enemies[i].body.position, GAME.enemies[i].body.collider), 1.0f, ORANGE);
                         }
                         if (!GAME.projectiles.empty()) {
                             for (const auto bullet : GAME.projectiles) {
-                                Rectangle bulletSprite = {bullet.position.x, bullet.position.y, 8.0f, 4.0f};
+                                Rectangle bulletSprite = {bullet.body.position.x, bullet.body.position.y, 8.0f, 4.0f};
                                 DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
+
+                                if (GAME.debugModeON)
+                                    DrawRectangleLinesEx(getHitbox(bullet.body.position, bullet.body.collider), 1.0f, ORANGE);
                             }
                         }
+
+
+                        // tempbullet DEBUG DEBUG DEBUG -----------------------------------------------------------
+                        Rectangle tempBulletSprite = {tempbullet.body.position.x, tempbullet.body.position.y, 8.0f, 4.0f};
+                        DrawRectanglePro(tempBulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(tempbullet.direction.y, tempbullet.direction.x) * RAD2DEG), YELLOW);
+                        DrawRectangleLinesEx(getHitbox(tempbullet.body.position, tempbullet.body.collider), 1.0f, ORANGE);
+                        // DEBUG DEBUG DEBUG ----------------------------------------------------------------------
+
                     } else if (GAME.gameState == INVENTORY) {
                         DrawRectangle((camera.target.x - GAME.screen.Center.x + GAME.screen.Width/10.0f), (camera.target.y - GAME.screen.Center.y + GAME.screen.Height/10.0f), 8.0f * GAME.screen.Width/10.0f, 8.0f * GAME.screen.Height/10.0f, BLACK);
                     }
@@ -1128,6 +1188,8 @@ int main() {
                 DrawText(TextFormat("GOLD: %d", GAME.gold), GAME.screen.Width - 180, 20, 24, GOLD);
             if (GAME.gameState != MENU && GAME.gameState != STATUS_TREE)
                 DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
+            if (GAME.debugModeON) DrawLineV(GAME.screen.Center, mouseScreen, RED);
+            DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
         EndDrawing();
     }
 
