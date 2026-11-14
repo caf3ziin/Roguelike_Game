@@ -867,8 +867,17 @@ int main() {
 
                         if (enemy.attackFrameTimer >= frameDuration) {
                             enemy.attackFrameTimer = 0.0f;
+
+                            if (enemy.attackFrame == 2) {
+                                float distance = Vector2DistanceSqr(enemy.body.position, player.body.position);
+                                if (distance <= attackDistance * attackDistance) {
+                                    player.healthPoints -= enemy.powerPoints;
+                                }
+                            }
+
                             enemy.attackFrame++;
 
+                            
                             if (enemy.attackFrame >= 4) {
                                 enemy.attackFrame = 0;
                                 enemy.enemyState = EnemyState::IDLE;
@@ -888,9 +897,12 @@ int main() {
 
                     case EnemyState::ROAMING:
                     case EnemyState::SEARCHING: {
-                        float distance = Vector2Distance(enemy.body.position, player.body.position);
+                        // distância do inimigo até o player (é melhor calcular com "Vector2DistanceSqr" pq não usa de raiz quadrada - e raiz quadrada pesa bastante)
+                        // porém daí a distância é calculada ao quadrado
+                        float distance = Vector2DistanceSqr(enemy.body.position, player.body.position);
 
-                        if (distance <= attackDistance) {
+                        // e portanto é importante lembrar de calcular o quadrado da distância que se deseja comparar:
+                        if (distance <= attackDistance * attackDistance) {
                             enemy.enemyState = EnemyState::ATTACKING;
                             enemy.attackFrame = 0;
                             enemy.attackFrameTimer = 0.0f;
@@ -1284,10 +1296,15 @@ int main() {
             }
             if (GAME.gameState == MENU || GAME.gameState == STATUS_TREE)
                 DrawText(TextFormat("GOLD: %d", GAME.gold), GAME.screen.Width - 180, 20, 24, GOLD);
-            if (GAME.gameState != MENU && GAME.gameState != STATUS_TREE)
-                DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
-            if (GAME.debugModeON) DrawLineV(Vector2Add(GAME.screen.Center, player.projectileOffset), mouseScreen, RED);
-            DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
+            if (GAME.gameState == PLAYING || GAME.gameState == PAUSED) {
+                DrawRectangle(7, 7, 75, 25, WHITE);
+                DrawText(TextFormat("HP: %u", player.healthPoints), 10, 10, 20, RED);
+                if (GAME.debugModeON) {
+                    if (GAME.gameState == PLAYING)
+                        DrawLineV(Vector2Add(GAME.screen.Center, player.projectileOffset), mouseScreen, RED);
+                    DrawText(TextFormat("seed: %u", GAME.seed), GAME.screen.Width - 180, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
+                }
+            }
         EndDrawing();
     }
 
