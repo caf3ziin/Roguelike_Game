@@ -9,7 +9,7 @@
 
 using namespace std;
 
-mt19937 gen{}; 
+mt19937 gen{};
 
 //-----------------------------------------------------------------------------------------
 // ENUMS
@@ -18,7 +18,7 @@ enum EnemyType { ZOMBIE, /* ORC, SKELETON */};
 enum PlayerAnimation { PLAYER_RUN, PLAYER_IDLE, PLAYER_ATTACK, PLAYER_DEAD};
 
 enum GameState { MENU, PLAYING, INVENTORY, MAP, STATUS_TREE, PAUSED, SETTINGS };
-enum EnemyState { ROAMING, SEARCHING, ATTACKING, IDLE};
+enum EnemyState { ROAMING, SEARCHING, ATTACKING, IDLE, DYING};
 enum TileType { FLOOR, WALL, WATER };
 
 //------------------------------------------------------------------------------------------
@@ -31,7 +31,7 @@ struct Collider {
     Vector2 offset = { 0, 24 };    // deslocamento a partir do centro da entidade
 };
 
-// struct que guarda a posição, a velocidade e a hitbox (collider) de cada entidade do jogo 
+// struct que guarda a posição, a velocidade e a hitbox (collider) de cada entidade do jogo
 struct Entity {
     Vector2 position = { 0, 0 };
     float speed = 5.0f;
@@ -64,6 +64,12 @@ struct Enemy {
     int attackFrame = 0;
     float attackFrameTimer = 0.0f;
     float idleTimer = 0.0f;
+
+    // animacao de morte (cada inimigo morre no seu proprio tempo,
+    // por isso o frame e os timers sao de cada um, nao compartilhados)
+    int deathFrame = 0;
+    float deathFrameTimer = 0.0f;
+    float deathHoldTimer = 0.0f;
 };
 
 // ESTRUTURA DE CONFIGURAÇÕES GERAIS DO JOGO
@@ -117,7 +123,9 @@ struct Players {
 
     PlayerSkin skin = KITSUNE;
     PlayerAnimation animation = PLAYER_IDLE;
-  
+
+    Vector2 projectileOffset = { 0, 15 };
+
     int currentFrame = 0;
     float frameTimer = 0.0f;
 };
@@ -213,7 +221,7 @@ EnemySprites zombieSprites;
 // INICIO DAS FUNCOES
 
 // Vetor unidimensional que guarda os tipos de tiles
-vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                
+vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);
 TileType& tileAt(int x, int y) { return tiles[y * GAME.MAP_W + x]; }        // Função que retorna o tipo do tile na posição (x, y)
 
 
@@ -240,8 +248,8 @@ Rectangle getHitbox(Vector2 pos, const Collider& c) {
 
 // Gera os inimigos na volta do personagem
 void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
-    uniform_int_distribution<int> ranHeight(0, GAME.MAP_H * GAME.TILE - 40); 
-    uniform_int_distribution<int> ranWidth(0, GAME.MAP_W * GAME.TILE - 40); 
+    uniform_int_distribution<int> ranHeight(0, GAME.MAP_H * GAME.TILE - 40);
+    uniform_int_distribution<int> ranWidth(0, GAME.MAP_W * GAME.TILE - 40);
 
     for(int i = 0; i < enemiesAmount; i++){
         do {
@@ -259,11 +267,15 @@ void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
 }
 
 // Move os inimigos em direção ao player de acordo com sua posição (x, y)
-void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
+// OBS: o tamanho do vetor é lido com enemies.size() porque inimigos mortos são
+// removidos do vetor durante a partida (a quantidade não é mais fixa).
+void enemyMovement(vector<Enemy>& enemies, int enemyIndex) {
     Enemy& enemy = enemies[enemyIndex];
 
-    if (enemy.enemyState == EnemyState::IDLE ||
-        enemy.enemyState == EnemyState::ATTACKING)
+    // Lista de permissao: so anda quem esta ROAMING ou SEARCHING.
+    // Assim, qualquer estado novo (DYING, etc.) ja nasce parado por padrao.
+    if (enemy.enemyState != EnemyState::ROAMING &&
+        enemy.enemyState != EnemyState::SEARCHING)
         return;
 
     const float deltaTime = GetFrameTime();
@@ -310,8 +322,9 @@ void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
 
     const float minimumDistance = 15.0f;
 
-    for (int i = 0; i < enemiesAmount; i++) {
-        if (i == enemyIndex)
+    for (int i = 0; i < (int)enemies.size(); i++) {
+        // o proprio inimigo e os que estao morrendo nao bloqueiam a passagem
+        if (i == enemyIndex || enemies[i].enemyState == EnemyState::DYING)
             continue;
 
         if (Vector2Distance(nextPosition, enemies[i].body.position) < minimumDistance) {
@@ -370,7 +383,7 @@ int getPlayerFrameCount() {
         case KITSUNE:
             switch (player.animation) {
                 case PLAYER_DEAD: return 10;
-                default: return 8;
+                case PLAYER_IDLE: case PLAYER_ATTACK: case PLAYER_RUN: return 8;
             }
 
         case GANGSTER:
@@ -414,12 +427,9 @@ EnemySprites& getEnemySprites(EnemyType type) {
 
 /*
     TODO:
-        - Colisão das balas
-        - Geração de inimigos
-        - IA dos inimigos
         - sistema de vida e dano do player
         - Sistema de itens
-        - pegar sprites para o player, cenário, inimigos, projéteis, etc
+        - drop de gold ao matar inimigos
         - criar diferentes tipos de projéteis
         - criar armas corpo a corpo
         - criar a geração de fases do mundo
@@ -442,7 +452,7 @@ int main() {
 
     const int enemiesAmount = 20;
     GAME.enemies.resize(enemiesAmount);
-    
+
     // Initialization
     //-------------------------------------------------------------------------------------
     ChangeDirectory(GetApplicationDirectory());                         // Muda o diretório de inicialiçação para o diretório onde se encontra o executável
@@ -527,6 +537,8 @@ int main() {
     float enemyFrameTimer = 0.0f;
 
     const float attackDistance = 15.0f;
+    const int enemyDeathFrames = 5;         // Dead.png do zumbi: 640x128 = 5 frames de 128x128
+    const float enemyDeathHoldTime = 5.0f;  // tempo caido no ultimo frame antes de sumir
     const Rectangle startButton = {
         GAME.screen.Center.x - 120.0f,
         GAME.screen.Center.y - 30.0f,
@@ -605,11 +617,18 @@ int main() {
                 // Geração da seed e do mapa somente ao iniciar uma partida.
                 unsigned int seed = (unsigned int)time(nullptr); // a seed gerada é de acordo com o horário da execução no sistema
                 SetRandomSeed(seed);
+                gen.seed(seed);   // o mt19937 também precisa da seed, senão os inimigos nascem sempre no mesmo lugar
                 GAME.seed = seed; // Guarda a seed na struct do jogo, e a variável local é jogada fora
                 printSeedDebug(GAME.seed);
 
+                // Reinicia o estado da partida.
+                // Inimigos mortos são apagados do vetor, então o vetor precisa ser
+                // refeito do zero a cada nova partida (vida, estado e timers resetados).
+                GAME.projectiles.clear();
+                GAME.enemies.assign(enemiesAmount, Enemy{});
                 createEnemies(GAME.enemies, enemiesAmount);
 
+                tiles.assign(tiles.size(), FLOOR);  // limpa as paredes da partida anterior
                 for (int i = 0; i < tiles.size(); i++) {
                     int percentage = GetRandomValue(1, 100);
                     if (percentage <= 15)
@@ -789,11 +808,11 @@ int main() {
 
         if (IsKeyPressed(KEY_TAB)) {
             if (GAME.gameState == GameState::PLAYING) GAME.gameState = GameState::INVENTORY;
-            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::PLAYING;      
+            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::PLAYING;
         }
         if (IsKeyPressed(KEY_M))
             if (GAME.gameState == GameState::PLAYING || GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::MAP;
-            else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;   
+            else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;
         if (IsKeyPressed(KEY_ESCAPE)) {
             if (GAME.gameState == STATUS_TREE)
                 GAME.gameState = MENU;
@@ -823,42 +842,68 @@ int main() {
         };
 
         if (GAME.gameState == PLAYING) {
-            for (int i = 0; i < enemiesAmount; i++) {
+            for (int i = 0; i < (int)GAME.enemies.size(); i++) {
                 Enemy& enemy = GAME.enemies[i];
 
-                if (enemy.enemyState == EnemyState::ATTACKING) {
-                    enemy.attackFrameTimer += GetFrameTime();
+                switch (enemy.enemyState) {
+                    case EnemyState::DYING: {
+                        // Toca a animacao de morte UMA vez e trava no ultimo frame;
+                        // dali em diante so conta o tempo caido no chao.
+                        if (enemy.deathFrame < enemyDeathFrames - 1) {
+                            enemy.deathFrameTimer += GetFrameTime();
 
-                    if (enemy.attackFrameTimer >= frameDuration) {
-                        enemy.attackFrameTimer = 0.0f;
-                        enemy.attackFrame++;
-
-                        if (enemy.attackFrame >= 4) {
-                            enemy.attackFrame = 0;
-                            enemy.enemyState = EnemyState::IDLE;
-                            enemy.idleTimer = 0.5f;
+                            if (enemy.deathFrameTimer >= frameDuration) {
+                                enemy.deathFrameTimer = 0.0f;
+                                enemy.deathFrame++;
+                            }
+                        } else {
+                            enemy.deathHoldTimer += GetFrameTime();
                         }
+                        break;
                     }
-                } else if (enemy.enemyState == EnemyState::IDLE) {
-                    enemy.idleTimer -= GetFrameTime();
 
-                    if (enemy.idleTimer <= 0.0f)
-                        enemy.enemyState = EnemyState::SEARCHING;
-                } else {
-                    float distance = Vector2Distance(enemy.body.position, player.body.position);
+                    case EnemyState::ATTACKING: {
+                        enemy.attackFrameTimer += GetFrameTime();
 
-                    if (distance <= attackDistance) {
-                        enemy.enemyState = EnemyState::ATTACKING;
-                        enemy.attackFrame = 0;
-                        enemy.attackFrameTimer = 0.0f;
-                    } else if (CheckCollisionPointRec(enemy.body.position, visibleWorld)) {
-                        enemy.enemyState = EnemyState::SEARCHING;
-                    } else {
-                        enemy.enemyState = EnemyState::ROAMING;
+                        if (enemy.attackFrameTimer >= frameDuration) {
+                            enemy.attackFrameTimer = 0.0f;
+                            enemy.attackFrame++;
+
+                            if (enemy.attackFrame >= 4) {
+                                enemy.attackFrame = 0;
+                                enemy.enemyState = EnemyState::IDLE;
+                                enemy.idleTimer = 0.5f;
+                            }
+                        }
+                        break;
+                    }
+
+                    case EnemyState::IDLE: {
+                        enemy.idleTimer -= GetFrameTime();
+
+                        if (enemy.idleTimer <= 0.0f)
+                            enemy.enemyState = EnemyState::SEARCHING;
+                        break;
+                    }
+
+                    case EnemyState::ROAMING:
+                    case EnemyState::SEARCHING: {
+                        float distance = Vector2Distance(enemy.body.position, player.body.position);
+
+                        if (distance <= attackDistance) {
+                            enemy.enemyState = EnemyState::ATTACKING;
+                            enemy.attackFrame = 0;
+                            enemy.attackFrameTimer = 0.0f;
+                        } else if (CheckCollisionPointRec(enemy.body.position, visibleWorld)) {
+                            enemy.enemyState = EnemyState::SEARCHING;
+                        } else {
+                            enemy.enemyState = EnemyState::ROAMING;
+                        }
+                        break;
                     }
                 }
 
-                enemyMovement(GAME.enemies, i, enemiesAmount);
+                enemyMovement(GAME.enemies, i);
             }
         }
 
@@ -872,7 +917,7 @@ int main() {
                 Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.body.position));
 
                 Projectile p;
-                p.body.position = player.body.position;
+                p.body.position = Vector2Add(player.body.position, player.projectileOffset);
                 p.body.speed    = 10.0f;
                 p.direction     = direction;
                 p.damage        = 10;
@@ -883,14 +928,54 @@ int main() {
 
             for (int i = (int)GAME.projectiles.size() - 1; i >= 0; i--) {
                 Projectile& bullet = GAME.projectiles[i];
-                
+
                 bullet.screenTime += GetFrameTime();
-                if (bullet.screenTime > 5.0f) {
+
+                // Colisão das balas com os inimigos
+                for (int j = (int)GAME.enemies.size() - 1; j >= 0; j--) {
+                    Enemy& enemy = GAME.enemies[j];
+
+                    // quem esta morrendo perdeu a hitbox: a bala passa direto
+                    // (zerar o collider nao basta - CheckCollisionRecs ainda
+                    //  acusa colisao para um retangulo degenerado por dentro de outro)
+                    if (enemy.enemyState == EnemyState::DYING)
+                        continue;
+
+                    if (CheckCollisionRecs(
+                        getHitbox(bullet.body.position, bullet.body.collider),
+                        getHitbox(enemy.body.position, enemy.body.collider))) {
+                            bullet.life--;
+                            enemy.healthPoints -= bullet.damage;
+                        }
+
+                    if (bullet.life <= 0) break;
+                }
+
+                if (bullet.screenTime > 5.0f || bullet.life <= 0) {
                     GAME.projectiles.erase(GAME.projectiles.begin() + i);
                     continue;
                 }
 
                 bullet.body.position = Vector2Add(bullet.body.position, Vector2Scale(bullet.direction, bullet.body.speed));
+            }
+
+            // Inimigo sem vida entra em DYING (perde a hitbox e para de agir);
+            // so sai do vetor depois da animacao + o tempo caido no chao.
+            for (int i = (int)GAME.enemies.size() - 1; i >= 0; i--) {
+                Enemy& enemy = GAME.enemies[i];
+
+                if (enemy.healthPoints <= 0 && enemy.enemyState != EnemyState::DYING) {
+                    enemy.enemyState = EnemyState::DYING;
+                    enemy.deathFrame = 0;
+                    enemy.deathFrameTimer = 0.0f;
+                    enemy.deathHoldTimer = 0.0f;
+                    enemy.body.collider.size = { 0.0f, 0.0f };   // sem hitbox a partir daqui
+                }
+
+                if (enemy.enemyState == EnemyState::DYING &&
+                    enemy.deathHoldTimer >= enemyDeathHoldTime) {
+                    GAME.enemies.erase(GAME.enemies.begin() + i);
+                }
             }
 
             enemyFrameTimer += GetFrameTime();
@@ -1031,51 +1116,19 @@ int main() {
                             }
                         }
                     }
-                    
+
                     if (GAME.gameState == PLAYING || GAME.gameState == PAUSED ||
                         GAME.gameState == SETTINGS) {
-                        Rectangle playerSource = {
-                            player.currentFrame * 128.0f,
-                            0.0f,
-                            128.0f,
-                            128.0f
-                        };
 
-                        if (player.facingLeft)
-                            playerSource.width = -playerSource.width;
-                        
-                        const float SPRITE_SIZE = 96.0f;
-                        Vector2 off = getPlayerSprites().offset;
-                        float dir = player.facingLeft ? -1.0f : 1.0f;
-
-                        Rectangle playerDestination = {
-                            player.body.position.x + off.x * dir,
-                            player.body.position.y + off.y,
-                            SPRITE_SIZE,
-                            SPRITE_SIZE
-                        };
-
-                        DrawTexturePro(
-                            getPlayerTexture(),
-                            playerSource,
-                            playerDestination,
-                            (Vector2){ SPRITE_SIZE / 2.0f, SPRITE_SIZE / 2.0f },
-                            0.0f,
-                            WHITE
-                        );
-                        
-                        if (GAME.debugModeON) {
-                            DrawRectangleLinesEx(getHitbox(player.body.position, player.body.collider), 2.0f, ORANGE);
-                            DrawLine(player.body.position.x, player.body.position.y - 60,
-                                    player.body.position.x, player.body.position.y + 60, GREEN);
-                        }
-                
-                        for (int i = 0; i < enemiesAmount; i++) {
+                        for (int i = 0; i < (int)GAME.enemies.size(); i++) {
                             EnemySprites& sprites = getEnemySprites(GAME.enemies[i].type);
                             Texture2D enemyTexture = sprites.walk;
                             int currentFrame = enemyCurrentFrame;
 
-                            if (GAME.enemies[i].enemyState == EnemyState::ATTACKING) {
+                            if (GAME.enemies[i].enemyState == EnemyState::DYING) {
+                                enemyTexture = sprites.dead;
+                                currentFrame = GAME.enemies[i].deathFrame;
+                            } else if (GAME.enemies[i].enemyState == EnemyState::ATTACKING) {
                                 enemyTexture = sprites.attack;
                                 currentFrame = GAME.enemies[i].attackFrame;
                             } else if (GAME.enemies[i].enemyState == EnemyState::IDLE) {
@@ -1107,7 +1160,7 @@ int main() {
                                 WHITE
                             );
 
-                            if (GAME.debugModeON)
+                            if (GAME.debugModeON && GAME.enemies[i].enemyState != EnemyState::DYING)
                                 DrawRectangleLinesEx(getHitbox(GAME.enemies[i].body.position, GAME.enemies[i].body.collider), 1.0f, ORANGE);
                         }
                         if (!GAME.projectiles.empty()) {
@@ -1120,12 +1173,57 @@ int main() {
                             }
                         }
 
+                        
 
                         // tempbullet DEBUG DEBUG DEBUG -----------------------------------------------------------
                         Rectangle tempBulletSprite = {tempbullet.body.position.x, tempbullet.body.position.y, 8.0f, 4.0f};
                         DrawRectanglePro(tempBulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(tempbullet.direction.y, tempbullet.direction.x) * RAD2DEG), YELLOW);
                         DrawRectangleLinesEx(getHitbox(tempbullet.body.position, tempbullet.body.collider), 1.0f, ORANGE);
                         // DEBUG DEBUG DEBUG ----------------------------------------------------------------------
+
+                        
+
+
+                        // ------- INICIO DO DESENHO DO PLAYER --------------
+
+                        Rectangle playerSource = {
+                            player.currentFrame * 128.0f,
+                            0.0f,
+                            128.0f,
+                            128.0f
+                        };
+
+                        if (player.facingLeft)
+                            playerSource.width = -playerSource.width;
+
+                        const float SPRITE_SIZE = 96.0f;
+                        Vector2 off = getPlayerSprites().offset;
+                        float dir = player.facingLeft ? -1.0f : 1.0f;
+
+                        Rectangle playerDestination = {
+                            player.body.position.x + off.x * dir,
+                            player.body.position.y + off.y,
+                            SPRITE_SIZE,
+                            SPRITE_SIZE
+                        };
+
+                        DrawTexturePro(
+                            getPlayerTexture(),
+                            playerSource,
+                            playerDestination,
+                            (Vector2){ SPRITE_SIZE / 2.0f, SPRITE_SIZE / 2.0f },
+                            0.0f,
+                            WHITE
+                        );
+
+                        if (GAME.debugModeON) {
+                            DrawRectangleLinesEx(getHitbox(player.body.position, player.body.collider), 2.0f, ORANGE);
+                            DrawLine(player.body.position.x, player.body.position.y - 60,
+                                    player.body.position.x, player.body.position.y + 60, GREEN);
+                        }
+
+                        // ------- FIM DO DESENHO DO PLAYER --------------
+
 
                     } else if (GAME.gameState == INVENTORY) {
                         DrawRectangle((camera.target.x - GAME.screen.Center.x + GAME.screen.Width/10.0f), (camera.target.y - GAME.screen.Center.y + GAME.screen.Height/10.0f), 8.0f * GAME.screen.Width/10.0f, 8.0f * GAME.screen.Height/10.0f, BLACK);
@@ -1188,7 +1286,7 @@ int main() {
                 DrawText(TextFormat("GOLD: %d", GAME.gold), GAME.screen.Width - 180, 20, 24, GOLD);
             if (GAME.gameState != MENU && GAME.gameState != STATUS_TREE)
                 DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
-            if (GAME.debugModeON) DrawLineV(GAME.screen.Center, mouseScreen, RED);
+            if (GAME.debugModeON) DrawLineV(Vector2Add(GAME.screen.Center, player.projectileOffset), mouseScreen, RED);
             DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
         EndDrawing();
     }
