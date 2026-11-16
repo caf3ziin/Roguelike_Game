@@ -67,15 +67,15 @@ struct Enemy {
     float attackFrameTimer = 0.0f;
     float idleTimer = 0.0f;
 
-    // animacao de morte (cada inimigo morre no seu proprio tempo,
-    // por isso o frame e os timers sao de cada um, nao compartilhados)
+    // animação de morte (cada inimigo morre no seu proprio tempo,
+    // por isso o frame e os timers são de cada um, não compartilhados)
     int deathFrame = 0;
     float deathFrameTimer = 0.0f;
     float deathHoldTimer = 0.0f;
 };
 
 // Ouro largado no chao por um inimigo morto. Fica parado ate o player chegar
-// perto; dentro do raio do ima ele e puxado e coletado ao encostar.
+// perto; dentro do raio do imã ele e puxado e coletado ao encostar.
 struct GoldDrop {
     Vector2 position = { 0, 0 };
     int value = 1;
@@ -504,6 +504,7 @@ void saveMusicVolume(int volume) {
         - Sistema de itens
         - criar diferentes tipos de projéteis
         - criar armas corpo a corpo
+        - adicionar música "Never Gonna Give You Up - 8 bit" como easter egg
         - criar a geração de fases do mundo
         - criar sistema de xp e levels
         - criar geração de poderes aleatórios a cada level novo
@@ -530,7 +531,7 @@ int main() {
     // Initialization
     //-------------------------------------------------------------------------------------
     ChangeDirectory(GetApplicationDirectory());                         // Muda o diretório de inicialiçação para o diretório onde se encontra o executável
-    InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");     // INICIALIZAÇÃO DA JANELA (INIT-WINDOW)
+    InitWindow(GAME.screen.Width, GAME.screen.Height, "DENUO - A Roguelike Project");     // INICIALIZAÇÃO DA JANELA (INIT-WINDOW)
     InitAudioDevice();
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
     SetExitKey(KEY_NULL);           // Retira o ESC como tecla de fechar o jogo
@@ -1323,7 +1324,8 @@ int main() {
                 bool startButtonHovered = menuButtonsActive &&
                     CheckCollisionPointRec(mousePosition, startButton);
 
-                DrawText("ROGUELIKE", GAME.screen.Center.x - 180.0f, 150.0f, 60, WHITE);
+                DrawText("DENUO", GAME.screen.Center.x - 100.0f, 150.0f, 60, WHITE);
+                DrawText("A Roguelike Project", GAME.screen.Center.x - 150.0f, 200.0f, 30, WHITE);
 
                 DrawRectangleRec(
                     startButton,
