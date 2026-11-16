@@ -1,6 +1,7 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "debug.h"
+#include "skillTreeDescriptions.h"
 #include <math.h>
 #include <vector>
 #include <random>
@@ -72,6 +73,15 @@ struct Enemy {
     float deathHoldTimer = 0.0f;
 };
 
+// Ouro largado no chao por um inimigo morto. Fica parado ate o player chegar
+// perto; dentro do raio do ima ele e puxado e coletado ao encostar.
+struct GoldDrop {
+    Vector2 position = { 0, 0 };
+    int value = 1;
+    float bobTimer = 0.0f;    // balancinho vertical, puramente visual
+    float pullSpeed = 0.0f;   // velocidade atual da atracao (acelera enquanto puxa)
+};
+
 // ESTRUTURA DE CONFIGURAÇÕES GERAIS DO JOGO
 struct GameStructure {
     GameState gameState = MENU;      // variável que guarda o estado do jogo para recursos de menu e mapa
@@ -102,7 +112,9 @@ struct GameStructure {
 
     vector<Projectile> projectiles;
     vector<Enemy> enemies;
-    int gold = 0;
+    vector<GoldDrop> goldDrops;
+    int gold = 0;        // ouro total, gasto na arvore de status
+    int runGold = 0;     // ouro coletado so nesta run (para a tela de game over)
 
     // Escala de tempo do mundo: 1.0 = normal. Na morte do player ela cai ate 0,
     // e tudo que anda/anima pelo mundo entra em camera lenta e congela junto.
@@ -129,6 +141,11 @@ struct Players {
     int attackLevel = 0;
     int defenseLevel = 0;
     int movementLevel = 0;
+
+    // ramo do ouro: ainda sem nos na arvore, mas as formulas de drop ja leem daqui
+    int goldLevel = 0;         // quantos nos do ramo do ouro ja foram comprados
+    int goldDropLevel = 0;     // aumenta a CHANCE de dropar
+    int goldAmountLevel = 0;   // aumenta a QUANTIDADE dropada
 
     bool facingLeft = false;
 
@@ -171,12 +188,23 @@ void drawWingIcon(Vector2 center, Color color) {
     DrawLineEx(center, {center.x + 9.0f, center.y + 10.0f}, 3.0f, color);
 }
 
+void drawCoinIcon(Vector2 center, Color color) {
+    DrawCircleLines((int)center.x, (int)center.y, 11.0f, color);
+    DrawCircleLines((int)center.x, (int)center.y, 7.0f, color);
+    DrawLineEx({center.x, center.y - 8.0f}, {center.x, center.y + 8.0f}, 2.0f, color);
+}
+
 void drawStatusNode(Vector2 center, float radius, bool purchased, bool available, int cost, int icon) {
-    Color nodeColor = purchased || available ? GRAY : BLACK;
+    // comprado = verde cheio; da pra comprar = cinza claro; travado = preto
+    Color nodeColor = purchased ? DARKGREEN : (available ? GRAY : BLACK);
+    Color ringColor = purchased ? GREEN : WHITE;
     Color iconColor = purchased || available ? WHITE : GRAY;
 
     DrawCircleV(center, radius, nodeColor);
-    DrawCircleLines((int)center.x, (int)center.y, radius, WHITE);
+    DrawCircleLines((int)center.x, (int)center.y, radius, ringColor);
+
+    if (purchased)   // anel um pouco mais grosso para destacar o que ja e seu
+        DrawCircleLines((int)center.x, (int)center.y, radius - 1.0f, ringColor);
 
     if (icon == 0)
         drawSwordIcon(center, iconColor);
@@ -184,6 +212,8 @@ void drawStatusNode(Vector2 center, float radius, bool purchased, bool available
         drawShieldIcon(center, iconColor);
     else if (icon == 2)
         drawWingIcon(center, iconColor);
+    else if (icon == 3)
+        drawCoinIcon(center, iconColor);
 
     if (!purchased)
         DrawText(TextFormat("%d", cost), (int)center.x - 5, (int)center.y + radius + 3, 12, WHITE);
@@ -443,7 +473,6 @@ EnemySprites& getEnemySprites(EnemyType type) {
 /*
     TODO:
         - Sistema de itens
-        - drop de gold ao matar inimigos
         - criar diferentes tipos de projéteis
         - criar armas corpo a corpo
         - criar a geração de fases do mundo
@@ -560,6 +589,17 @@ int main() {
     const float slowMotionStart = 0.35f;          // velocidade do mundo no instante da morte
     const float slowMotionDuration = 2.0f;        // tempo ate o mundo congelar de vez
     const float gameOverFadeDuration = 0.5f;      // duracao do escurecimento da tela
+    // ---- ouro ----
+    const float goldBaseDropChance = 0.40f;       // 40% dos inimigos dropam
+    const int goldBaseMinValue = 1;               // quantidade minima dropada
+    const int goldBaseMaxValue = 3;               // quantidade maxima dropada
+    const float goldDropChancePerLevel = 0.10f;   // skill futura: +10 pontos percentuais por nivel
+    const int goldValuePerLevel = 1;              // skill futura: +1 no minimo e no maximo
+    const float goldMagnetRadius = 90.0f;         // distancia em que o ouro comeca a ser puxado
+    const float goldPickupRadius = 16.0f;         // distancia em que o ouro e coletado
+    const float goldPullSpeedStart = 60.0f;       // px/s no inicio da atracao
+    const float goldPullAcceleration = 900.0f;    // px/s^2 enquanto esta sendo puxado
+    const float goldSize = 10.0f;                 // PLACEHOLDER: lado do quadrado amarelo
     float gameOverFadeTimer = 0.0f;
     const Rectangle gameOverWindow = { 440.0f, 230.0f, 400.0f, 260.0f };
     const Rectangle gameOverMenuButton = { 490.0f, 390.0f, 300.0f, 55.0f };
@@ -588,8 +628,28 @@ int main() {
     const Vector2 weaponsNodes[] = {
         { 760.0f, 300.0f }, { 830.0f, 230.0f }, { 920.0f, 170.0f }
     };
+    // Ramo do ouro: sobe reto pelo meio, entre o de ataque e o de armas.
+    // No 1 = chance de dropar, no 2 = quantidade, no 3 = os dois.
+    const Vector2 goldNodes[] = {
+        { 700.0f, 270.0f }, { 700.0f, 180.0f }, { 700.0f, 90.0f }
+    };
     const float statusNodeRadius = 12.0f;
     const int statusUpgradeCosts[] = { 10, 20, 30 };
+    const int goldUpgradeCosts[] = { 5, 15, 25 };   // mais baratos que os outros ramos
+
+    // Ganho de cada nivel. Estao nomeados porque as descricoes do tooltip leem
+    // daqui: mudando o balanceamento, o texto muda junto sozinho.
+    const int attackPowerPerLevel = 5;
+    const int defensePerLevel = 5;
+    const int speedPerLevel = 1;
+
+    const SkillValues skillValues = {
+        .attackPerLevel = attackPowerPerLevel,
+        .defensePerLevel = defensePerLevel,
+        .speedPerLevel = speedPerLevel,
+        .goldChancePerLevel = (int)(goldDropChancePerLevel * 100.0f),
+        .goldAmountPerLevel = goldValuePerLevel
+    };
     const float skillTreeZoom = 1.6f;
     Vector2 skillTreePan = { 0.0f, 0.0f };
     Vector2 skillTreeDragStart = { 0.0f, 0.0f };
@@ -649,6 +709,8 @@ int main() {
                 // Inimigos mortos são apagados do vetor, então o vetor precisa ser
                 // refeito do zero a cada nova partida (vida, estado e timers resetados).
                 GAME.projectiles.clear();
+                GAME.goldDrops.clear();
+                GAME.runGold = 0;
                 GAME.enemies.assign(enemiesAmount, Enemy{});
                 createEnemies(GAME.enemies, enemiesAmount);
 
@@ -656,6 +718,7 @@ int main() {
                 // player = Players{}) justamente para preservar o que foi comprado
                 // na arvore de status: attackPower, defense, speed e os niveis.
                 player.healthPoints = player.maxHealthPoints;
+                player.body.speed = (float)player.speed;   // aplica o upgrade de movimento
                 player.body.position = GAME.world.Center;
                 player.facingLeft = false;
                 player.deathTimer = 0.0f;
@@ -725,13 +788,14 @@ int main() {
                         Vector2 attackNode = skillTreeToScreen(attackNodes[i]);
                         Vector2 defenseNode = skillTreeToScreen(defenseNodes[i]);
                         Vector2 movementNode = skillTreeToScreen(movementNodes[i]);
+                        Vector2 goldNode = skillTreeToScreen(goldNodes[i]);
                         float nodeRadius = statusNodeRadius * skillTreeZoom;
 
                         if (i == player.attackLevel &&
                             CheckCollisionPointCircle(mousePosition, attackNode, nodeRadius) &&
                             GAME.gold >= statusUpgradeCosts[i]) {
                             GAME.gold -= statusUpgradeCosts[i];
-                            player.attackPower += 5;
+                            player.attackPower += attackPowerPerLevel;
                             player.attackLevel++;
                         }
 
@@ -739,7 +803,7 @@ int main() {
                             CheckCollisionPointCircle(mousePosition, defenseNode, nodeRadius) &&
                             GAME.gold >= statusUpgradeCosts[i]) {
                             GAME.gold -= statusUpgradeCosts[i];
-                            player.defense += 5;
+                            player.defense += defensePerLevel;
                             player.defenseLevel++;
                         }
 
@@ -747,8 +811,20 @@ int main() {
                             CheckCollisionPointCircle(mousePosition, movementNode, nodeRadius) &&
                             GAME.gold >= statusUpgradeCosts[i]) {
                             GAME.gold -= statusUpgradeCosts[i];
-                            player.speed += 1;
+                            player.speed += speedPerLevel;
+                            player.body.speed = (float)player.speed;  // e o corpo que anda
                             player.movementLevel++;
+                        }
+
+                        if (i == player.goldLevel &&
+                            CheckCollisionPointCircle(mousePosition, goldNode, nodeRadius) &&
+                            GAME.gold >= goldUpgradeCosts[i]) {
+                            GAME.gold -= goldUpgradeCosts[i];
+
+                            if (i == 0 || i == 2) player.goldDropLevel++;    // chance
+                            if (i == 1 || i == 2) player.goldAmountLevel++;  // quantidade
+
+                            player.goldLevel++;
                         }
                     }
                 }
@@ -908,7 +984,15 @@ int main() {
                             if (enemy.attackFrame == 2 && GAME.gameState == PLAYING) {
                                 float distance = Vector2DistanceSqr(enemy.body.position, player.body.position);
                                 if (distance <= attackDistance * attackDistance) {
-                                    player.healthPoints -= enemy.powerPoints;
+                                    // A defesa corta uma PORCENTAGEM do dano, truncando para
+                                    // baixo (assim o upgrade nunca arredonda o dano pra cima)
+                                    // e nunca deixando o golpe valer menos que 1.
+                                    int damage = (int)(enemy.powerPoints *
+                                        (1.0f - player.defense / 100.0f));
+                                    if (damage < 1)
+                                        damage = 1;
+
+                                    player.healthPoints -= damage;
                                 }
                             }
 
@@ -1022,7 +1106,7 @@ int main() {
                 p.body.position = Vector2Add(player.body.position, player.projectileOffset);
                 p.body.speed    = 10.0f;
                 p.direction     = direction;
-                p.damage        = 10;
+                p.damage        = player.attackPower;   // upgrade de ataque entra aqui
                 p.body.collider.offset = { 0, 0 };
                 p.body.collider.size = { 10, 8 };
                 GAME.projectiles.push_back(p);
@@ -1073,11 +1157,72 @@ int main() {
                     enemy.deathFrameTimer = 0.0f;
                     enemy.deathHoldTimer = 0.0f;
                     enemy.body.collider.size = { 0.0f, 0.0f };   // sem hitbox a partir daqui
+
+                    // Sorteio do drop de ouro. Os dois niveis entram aqui: um na
+                    // chance, outro na quantidade (ambos em 0 ate o ramo existir).
+                    uniform_real_distribution<float> ranChance(0.0f, 1.0f);
+                    float dropChance = goldBaseDropChance +
+                        player.goldDropLevel * goldDropChancePerLevel;
+
+                    if (ranChance(gen) < dropChance) {
+                        uniform_int_distribution<int> ranValue(
+                            goldBaseMinValue + player.goldAmountLevel * goldValuePerLevel,
+                            goldBaseMaxValue + player.goldAmountLevel * goldValuePerLevel);
+
+                        GoldDrop drop;
+                        // cai nos pes do inimigo, nao no centro do sprite
+                        drop.position = Vector2Add(enemy.body.position, (Vector2){ 0.0f, 25.0f });
+                        drop.value = ranValue(gen);
+                        GAME.goldDrops.push_back(drop);
+                    }
                 }
 
                 if (enemy.enemyState == EnemyState::DYING &&
                     enemy.deathHoldTimer >= enemyDeathHoldTime) {
                     GAME.enemies.erase(GAME.enemies.begin() + i);
+                }
+            }
+
+            // ---------------- OURO NO CHAO ----------------
+            // Fora do raio do ima o ouro so fica parado (sem timer: some quando o
+            // player pegar). Dentro do raio ele e puxado acelerando ate encostar.
+            if (GAME.gameState == PLAYING) {
+                Vector2 playerCenter = Vector2Add(player.body.position, player.body.collider.offset);
+
+                for (int i = (int)GAME.goldDrops.size() - 1; i >= 0; i--) {
+                    GoldDrop& drop = GAME.goldDrops[i];
+
+                    drop.bobTimer += getWorldDeltaTime();
+
+                    float distance = Vector2Distance(drop.position, playerCenter);
+                    bool collected = distance <= goldPickupRadius;
+
+                    if (!collected && distance <= goldMagnetRadius) {
+                        if (drop.pullSpeed < goldPullSpeedStart)
+                            drop.pullSpeed = goldPullSpeedStart;
+
+                        drop.pullSpeed += goldPullAcceleration * getWorldDeltaTime();
+
+                        float step = drop.pullSpeed * getWorldDeltaTime();
+
+                        if (step >= distance) {
+                            // o passo passaria do player: coleta em vez de atravessar
+                            // (protege contra o ouro furar o raio de coleta com FPS baixo)
+                            collected = true;
+                        } else {
+                            Vector2 toPlayer = Vector2Normalize(
+                                Vector2Subtract(playerCenter, drop.position));
+                            drop.position = Vector2Add(drop.position, Vector2Scale(toPlayer, step));
+                        }
+                    } else if (!collected) {
+                        drop.pullSpeed = 0.0f;   // saiu do alcance: para e volta a esperar
+                    }
+
+                    if (collected) {
+                        GAME.gold += drop.value;
+                        GAME.runGold += drop.value;
+                        GAME.goldDrops.erase(GAME.goldDrops.begin() + i);
+                    }
                 }
             }
 
@@ -1157,6 +1302,7 @@ int main() {
                 DrawLineEx(screenCenter, skillTreeToScreen(defenseNodes[0]), 3.0f, DARKBROWN);
                 DrawLineEx(screenCenter, skillTreeToScreen(movementNodes[0]), 3.0f, DARKBROWN);
                 DrawLineEx(screenCenter, skillTreeToScreen(weaponsNodes[0]), 3.0f, DARKBROWN);
+                DrawLineEx(screenCenter, skillTreeToScreen(goldNodes[0]), 3.0f, DARKBROWN);
                 for (int i = 0; i < 2; i++) {
                     DrawLineEx(skillTreeToScreen(attackNodes[i]), skillTreeToScreen(attackNodes[i + 1]),
                         3.0f, DARKBROWN);
@@ -1165,6 +1311,8 @@ int main() {
                     DrawLineEx(skillTreeToScreen(movementNodes[i]), skillTreeToScreen(movementNodes[i + 1]),
                         3.0f, DARKBROWN);
                     DrawLineEx(skillTreeToScreen(weaponsNodes[i]), skillTreeToScreen(weaponsNodes[i + 1]),
+                        3.0f, DARKBROWN);
+                    DrawLineEx(skillTreeToScreen(goldNodes[i]), skillTreeToScreen(goldNodes[i + 1]),
                         3.0f, DARKBROWN);
                 }
 
@@ -1187,6 +1335,114 @@ int main() {
                         statusUpgradeCosts[i], 2);
                     drawStatusNode(skillTreeToScreen(weaponsNodes[i]), statusNodeRadius * skillTreeZoom,
                         false, false, statusUpgradeCosts[i], 0);
+                    drawStatusNode(skillTreeToScreen(goldNodes[i]), statusNodeRadius * skillTreeZoom,
+                        i < player.goldLevel,
+                        i == player.goldLevel && GAME.gold >= goldUpgradeCosts[i],
+                        goldUpgradeCosts[i], 3);
+                }
+
+                // ---------------- TOOLTIP DO NO SOB O CURSOR ----------------
+                // Desenhado por ultimo, para ficar por cima dos nos e das linhas.
+                // Some enquanto o jogador esta arrastando a arvore.
+                if (!(skillTreeDragging && skillTreeDidDrag)) {
+                    const Vector2 cursor = GetMousePosition();
+                    const float nodeRadius = statusNodeRadius * skillTreeZoom;
+
+                    const Vector2* branchNodes[] = {
+                        attackNodes, defenseNodes, movementNodes, weaponsNodes, goldNodes
+                    };
+                    const SkillBranch branchIds[] = {
+                        SKILL_ATTACK, SKILL_DEFENSE, SKILL_MOVEMENT, SKILL_WEAPONS, SKILL_GOLD
+                    };
+                    const int* branchCosts[] = {
+                        statusUpgradeCosts, statusUpgradeCosts, statusUpgradeCosts,
+                        statusUpgradeCosts, goldUpgradeCosts
+                    };
+                    // nivel atual de cada ramo; -1 no de armas, que nao e comprável
+                    const int branchLevels[] = {
+                        player.attackLevel, player.defenseLevel, player.movementLevel,
+                        -1, player.goldLevel
+                    };
+                    const int branchCount = 5;
+
+                    int hoveredBranch = -1;
+                    int hoveredNode = -1;
+
+                    for (int b = 0; b < branchCount && hoveredBranch < 0; b++) {
+                        for (int i = 0; i < SKILL_NODES_PER_BRANCH; i++) {
+                            if (CheckCollisionPointCircle(cursor,
+                                    skillTreeToScreen(branchNodes[b][i]), nodeRadius)) {
+                                hoveredBranch = b;
+                                hoveredNode = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (hoveredBranch >= 0) {
+                        SkillBranch branch = branchIds[hoveredBranch];
+                        int branchLevel = branchLevels[hoveredBranch];
+                        int cost = branchCosts[hoveredBranch][hoveredNode];
+
+                        const char* title = getSkillName(branch, hoveredNode);
+                        const char* description =
+                            getSkillDescription(branch, hoveredNode, skillValues);
+
+                        const char* status;
+                        Color statusColor;
+
+                        if (branch == SKILL_WEAPONS) {
+                            status = "EM BREVE";
+                            statusColor = GRAY;
+                        } else if (hoveredNode < branchLevel) {
+                            status = "COMPRADO";
+                            statusColor = GREEN;
+                        } else if (hoveredNode == branchLevel && GAME.gold >= cost) {
+                            status = TextFormat("CUSTO: %d - clique para comprar", cost);
+                            statusColor = GOLD;
+                        } else if (hoveredNode == branchLevel) {
+                            status = TextFormat("CUSTO: %d - ouro insuficiente", cost);
+                            statusColor = RED;
+                        } else {
+                            status = TextFormat("CUSTO: %d - requer o no anterior", cost);
+                            statusColor = GRAY;
+                        }
+
+                        const int titleSize = 18;
+                        const int textSize = 16;
+                        const int padding = 10;
+                        const int lineGap = 6;
+
+                        int boxWidth = MeasureText(title, titleSize);
+                        if (MeasureText(description, textSize) > boxWidth)
+                            boxWidth = MeasureText(description, textSize);
+                        if (MeasureText(status, textSize) > boxWidth)
+                            boxWidth = MeasureText(status, textSize);
+                        boxWidth += padding * 2;
+
+                        int boxHeight = padding * 2 + titleSize + textSize * 2 + lineGap * 2;
+
+                        // sai de baixo do cursor e vira para dentro da tela quando nao cabe
+                        float boxX = cursor.x + 18.0f;
+                        float boxY = cursor.y + 18.0f;
+
+                        if (boxX + boxWidth > GAME.screen.Width)
+                            boxX = cursor.x - 18.0f - boxWidth;
+                        if (boxY + boxHeight > GAME.screen.Height)
+                            boxY = cursor.y - 18.0f - boxHeight;
+
+                        DrawRectangle((int)boxX, (int)boxY, boxWidth, boxHeight, Fade(BLACK, 0.9f));
+                        DrawRectangleLines((int)boxX, (int)boxY, boxWidth, boxHeight, WHITE);
+
+                        int textX = (int)boxX + padding;
+                        int textY = (int)boxY + padding;
+
+                        DrawText(title, textX, textY, titleSize, WHITE);
+                        textY += titleSize + lineGap;
+                        DrawText(description, textX, textY, textSize, LIGHTGRAY);
+                        textY += textSize + lineGap;
+                        DrawText(status, textX, textY, textSize, statusColor);
+                    }
                 }
             } else if (GAME.gameState == MAP) {
                 DrawRectangle(0, 0, GAME.screen.Width, GAME.screen.Height, YELLOW);
@@ -1266,6 +1522,21 @@ int main() {
 
                             if (GAME.debugModeON && GAME.enemies[i].enemyState != EnemyState::DYING)
                                 DrawRectangleLinesEx(getHitbox(GAME.enemies[i].body.position, GAME.enemies[i].body.collider), 1.0f, ORANGE);
+                        }
+
+                        // ---- OURO NO CHAO (PLACEHOLDER: quadrado amarelo) ----
+                        // Trocar este bloco por um DrawTexturePro quando o sprite existir.
+                        for (const GoldDrop& drop : GAME.goldDrops) {
+                            float bob = sinf(drop.bobTimer * 4.0f) * 2.0f;
+                            int goldX = (int)(drop.position.x - goldSize / 2.0f);
+                            int goldY = (int)(drop.position.y - goldSize / 2.0f + bob);
+
+                            DrawRectangle(goldX, goldY, (int)goldSize, (int)goldSize, GOLD);
+                            DrawRectangleLines(goldX, goldY, (int)goldSize, (int)goldSize, ORANGE);
+
+                            if (GAME.debugModeON)
+                                DrawCircleLines((int)drop.position.x, (int)drop.position.y,
+                                    goldMagnetRadius, YELLOW);
                         }
                         if (!GAME.projectiles.empty()) {
                             for (const auto bullet : GAME.projectiles) {
@@ -1402,6 +1673,10 @@ int main() {
                 GAME.gameState == PLAYER_DYING) {
                 DrawRectangle(7, 7, 75, 25, WHITE);
                 DrawText(TextFormat("HP: %u", player.healthPoints), 10, 10, 20, RED);
+
+                const char* goldText = TextFormat("OURO: %d", GAME.gold);
+                DrawRectangle(7, 37, MeasureText(goldText, 20) + 10, 25, WHITE);
+                DrawText(goldText, 10, 40, 20, ORANGE);
                 if (GAME.debugModeON) {
                     if (GAME.gameState == PLAYING)
                         DrawLineV(Vector2Add(GAME.screen.Center, player.projectileOffset), mouseScreen, RED);
