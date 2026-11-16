@@ -3,6 +3,7 @@
 #include "debug.h"
 #include "skillTreeDescriptions.h"
 #include <math.h>
+#include <stdio.h>   // sscanf, para ler o settings.txt
 #include <vector>
 #include <random>
 #include <ctime>
@@ -470,6 +471,34 @@ EnemySprites& getEnemySprites(EnemyType type) {
     }
 }
 
+// ---------------- CONFIGURACOES SALVAS EM DISCO ----------------
+// Um txt simples ao lado do executavel. O ChangeDirectory no inicio da main
+// garante que esse caminho relativo caia na pasta certa.
+const char* settingsFilePath = "settings.txt";
+
+int loadMusicVolume(int defaultVolume) {
+    if (!FileExists(settingsFilePath))
+        return defaultVolume;
+
+    char* fileText = LoadFileText(settingsFilePath);
+    if (fileText == nullptr)
+        return defaultVolume;
+
+    int volume = defaultVolume;
+    if (sscanf(fileText, "musicVolume=%d", &volume) != 1)
+        volume = defaultVolume;   // arquivo existe mas nao esta no formato esperado
+
+    UnloadFileText(fileText);
+
+    // o arquivo pode ter sido editado na mao: nao confie no numero
+    return (int)Clamp((float)volume, 0.0f, 100.0f);
+}
+
+void saveMusicVolume(int volume) {
+    // SaveFileText pede char* (nao const), dai o cast
+    SaveFileText(settingsFilePath, (char*)TextFormat("musicVolume=%d\n", volume));
+}
+
 /*
     TODO:
         - Sistema de itens
@@ -510,7 +539,7 @@ int main() {
     Music gameMusic = LoadMusicStream("resources/audio/gameMusic.ogg");
     menuMusic.looping = true;
     gameMusic.looping = true;
-    int musicVolume = 15;
+    int musicVolume = loadMusicVolume(15);   // 15 e o padrao de quem nunca abriu as configuracoes
     SetMusicVolume(menuMusic, musicVolume / 100.0f);
     SetMusicVolume(gameMusic, musicVolume / 100.0f);
     PlayMusicStream(menuMusic);
@@ -615,6 +644,15 @@ int main() {
         240.0f,
         60.0f
     };
+    const Rectangle menuSettingsButton = {
+        GAME.screen.Center.x - 120.0f,
+        GAME.screen.Center.y + 130.0f,
+        240.0f,
+        60.0f
+    };
+    // De onde a tela de configuracoes foi aberta: e para ca que o VOLTAR e o ESC
+    // devolvem o jogador. Evita precisar de um estado separado so para o menu.
+    GameState settingsReturnState = PAUSED;
     const Vector2 statusTreeCenter = { 700.0f, 430.0f };
     const Vector2 attackNodes[] = {
         { 650.0f, 310.0f }, { 570.0f, 240.0f }, { 480.0f, 170.0f }
@@ -695,7 +733,16 @@ int main() {
         //----------------------------------------------------------------------------------
         // Update your variables here
 
-        if (GAME.gameState == MENU) {
+        // Estado em que o frame COMECOU. Toda checagem de clique abaixo usa isto,
+        // e nao o GAME.gameState atual.
+        //
+        // Sem isso, um clique que troca de tela e lido de novo pela tela nova no
+        // mesmo frame: o botao CONFIGURACOES do menu (y 490-550) fica em cima do
+        // botao VOLTAR da tela de configuracoes (y 500-555), entao o mesmo clique
+        // abria a tela e ja saia dela, salvando o settings.txt no caminho.
+        const GameState frameState = GAME.gameState;
+
+        if (frameState == MENU) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
                  CheckCollisionPointRec(GetMousePosition(), startButton)) {
                 // Geração da seed e do mapa somente ao iniciar uma partida.
@@ -745,9 +792,15 @@ int main() {
                 CheckCollisionPointRec(GetMousePosition(), statusTreeButton)) {
                 GAME.gameState = STATUS_TREE;
             }
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+                CheckCollisionPointRec(GetMousePosition(), menuSettingsButton)) {
+                settingsReturnState = MENU;
+                GAME.gameState = SETTINGS;
+            }
         }
 
-        if (GAME.gameState == STATUS_TREE) {
+        if (frameState == STATUS_TREE) {
             Vector2 keyboardPan = { 0.0f, 0.0f };
             if (IsKeyDown(KEY_A))
                 keyboardPan.x += 1.0f;
@@ -838,7 +891,7 @@ int main() {
             GAME.gameState != PLAYER_DYING && GAME.gameState != GAME_OVER)
             player.skin = (PlayerSkin)((player.skin + 1) % 3);
 
-        if (GAME.gameState == PAUSED &&
+        if (frameState == PAUSED &&
             IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             Vector2 mousePosition = GetMousePosition();
 
@@ -849,17 +902,19 @@ int main() {
                 PlayMusicStream(menuMusic);
                 GAME.gameState = MENU;
             } else if (CheckCollisionPointRec(mousePosition, settingsButton)) {
+                settingsReturnState = PAUSED;
                 GAME.gameState = SETTINGS;
             }
         }
 
-        if (GAME.gameState == SETTINGS &&
+        if (frameState == SETTINGS &&
             IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
             CheckCollisionPointRec(GetMousePosition(), settingsBackButton)) {
-            GAME.gameState = PAUSED;
+            saveMusicVolume(musicVolume);
+            GAME.gameState = settingsReturnState;
         }
 
-        if (GAME.gameState == SETTINGS &&
+        if (frameState == SETTINGS &&
             IsMouseButtonDown(MOUSE_BUTTON_LEFT) &&
             CheckCollisionPointRec(GetMousePosition(), musicSliderHitArea)) {
             float sliderPosition = Clamp(
@@ -872,7 +927,12 @@ int main() {
             SetMusicVolume(gameMusic, musicVolume / 100.0f);
         }
 
-        if (GAME.gameState == MENU || GAME.gameState == STATUS_TREE)
+        // Nas configuracoes, quem manda e a tela de tras: aberta pelo menu, quem
+        // precisa continuar sendo alimentada e a musica do menu.
+        bool onMenuMusic = GAME.gameState == MENU || GAME.gameState == STATUS_TREE ||
+            (GAME.gameState == SETTINGS && settingsReturnState == MENU);
+
+        if (onMenuMusic)
             UpdateMusicStream(menuMusic);
         else
             UpdateMusicStream(gameMusic);
@@ -933,8 +993,10 @@ int main() {
                 GAME.gameState = PAUSED;
             else if (GAME.gameState == PAUSED)
                 GAME.gameState = PLAYING;
-            else if (GAME.gameState == SETTINGS)
-                GAME.gameState = PAUSED;
+            else if (GAME.gameState == SETTINGS) {
+                saveMusicVolume(musicVolume);
+                GAME.gameState = settingsReturnState;
+            }
         }
 
         camera.target = player.body.position;
@@ -1240,7 +1302,12 @@ int main() {
         BeginDrawing();
 
             ClearBackground(BLACK);
-            if (GAME.gameState == MENU) {
+            // O menu tambem e desenhado por tras das configuracoes abertas por ele,
+            // senao o fundo cairia no desenho do mundo (com inimigos de alguma run velha).
+            bool drawingMenu = GAME.gameState == MENU ||
+                (GAME.gameState == SETTINGS && settingsReturnState == MENU);
+
+            if (drawingMenu) {
                 DrawTexturePro(
                     menuBackground,
                     (Rectangle){0, 0, (float)menuBackground.width, (float)menuBackground.height},
@@ -1250,7 +1317,11 @@ int main() {
                     WHITE
                 );
                 Vector2 mousePosition = GetMousePosition();
-                bool startButtonHovered = CheckCollisionPointRec(mousePosition, startButton);
+                // com a janela de configuracoes aberta por cima, os botoes do menu
+                // nao respondem mais: nao devem acender com o cursor tambem
+                bool menuButtonsActive = GAME.gameState == MENU;
+                bool startButtonHovered = menuButtonsActive &&
+                    CheckCollisionPointRec(mousePosition, startButton);
 
                 DrawText("ROGUELIKE", GAME.screen.Center.x - 180.0f, 150.0f, 60, WHITE);
 
@@ -1267,7 +1338,8 @@ int main() {
                     30,
                     WHITE
                 );
-                bool statusTreeButtonHovered = CheckCollisionPointRec(mousePosition, statusTreeButton);
+                bool statusTreeButtonHovered = menuButtonsActive &&
+                    CheckCollisionPointRec(mousePosition, statusTreeButton);
                 DrawRectangleRec(
                     statusTreeButton,
                     statusTreeButtonHovered ? DARKBLUE : BLUE
@@ -1279,6 +1351,22 @@ int main() {
                         MeasureText("ARVORE DE STATUS", 18) / 2.0f,
                     statusTreeButton.y + 21.0f,
                     18,
+                    WHITE
+                );
+
+                bool menuSettingsHovered = menuButtonsActive &&
+                    CheckCollisionPointRec(mousePosition, menuSettingsButton);
+                DrawRectangleRec(
+                    menuSettingsButton,
+                    menuSettingsHovered ? GRAY : DARKGRAY
+                );
+                DrawRectangleLinesEx(menuSettingsButton, 3.0f, WHITE);
+                DrawText(
+                    "CONFIGURACOES",
+                    menuSettingsButton.x + menuSettingsButton.width / 2.0f -
+                        MeasureText("CONFIGURACOES", 20) / 2.0f,
+                    menuSettingsButton.y + 20.0f,
+                    20,
                     WHITE
                 );
             } else if (GAME.gameState == STATUS_TREE) {
@@ -1643,7 +1731,10 @@ int main() {
                     DrawRectangleRec(settingsBackButton, hovered ? BLUE : DARKBLUE);
                     DrawRectangleLinesEx(settingsBackButton, 2.0f, WHITE);
                     DrawText("VOLTAR", 600, 517, 20, WHITE);
-                    DrawText("ESC: voltar para a pausa", 520, 590, 18, LIGHTGRAY);
+                    DrawText(
+                        settingsReturnState == MENU ? "ESC: voltar para o menu"
+                                                    : "ESC: voltar para a pausa",
+                        520, 590, 18, LIGHTGRAY);
                 }
             }
             if (GAME.gameState == GAME_OVER) {
@@ -1688,6 +1779,8 @@ int main() {
 
     // De-Initialization
     //--------------------------------------------------------------------------------------
+    saveMusicVolume(musicVolume);   // garante o volume salvo mesmo fechando pelo X
+
     UnloadTexture(background);
     UnloadTexture(menuBackground);
     UnloadTexture(skillTreeBackground);
