@@ -442,12 +442,13 @@ EnemySprites& getEnemySprites(EnemyType type) {
 
 /*
     TODO:
-        - sistema de vida e dano do player
         - Sistema de itens
         - drop de gold ao matar inimigos
         - criar diferentes tipos de projéteis
         - criar armas corpo a corpo
         - criar a geração de fases do mundo
+        - criar sistema de xp e levels
+        - criar geração de poderes aleatórios a cada level novo
 */
 
 
@@ -1275,17 +1276,6 @@ int main() {
                                     DrawRectangleLinesEx(getHitbox(bullet.body.position, bullet.body.collider), 1.0f, ORANGE);
                             }
                         }
-
-                        
-
-                        // tempbullet DEBUG DEBUG DEBUG -----------------------------------------------------------
-                        Rectangle tempBulletSprite = {tempbullet.body.position.x, tempbullet.body.position.y, 8.0f, 4.0f};
-                        DrawRectanglePro(tempBulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(tempbullet.direction.y, tempbullet.direction.x) * RAD2DEG), YELLOW);
-                        DrawRectangleLinesEx(getHitbox(tempbullet.body.position, tempbullet.body.collider), 1.0f, ORANGE);
-                        // DEBUG DEBUG DEBUG ----------------------------------------------------------------------
-
-                        
-
 
                         // ------- INICIO DO DESENHO DO PLAYER --------------
 
