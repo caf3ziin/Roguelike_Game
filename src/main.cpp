@@ -17,7 +17,7 @@ enum PlayerSkin { KITSUNE, GANGSTER, SOLDIER};
 enum EnemyType { ZOMBIE, /* ORC, SKELETON */};
 enum PlayerAnimation { PLAYER_RUN, PLAYER_IDLE, PLAYER_ATTACK, PLAYER_DEAD};
 
-enum GameState { MENU, PLAYING, INVENTORY, MAP, STATUS_TREE, PAUSED, SETTINGS };
+enum GameState { MENU, PLAYING, INVENTORY, MAP, STATUS_TREE, PAUSED, SETTINGS, PLAYER_DYING, GAME_OVER };
 enum EnemyState { ROAMING, SEARCHING, ATTACKING, IDLE, DYING};
 enum TileType { FLOOR, WALL, WATER };
 
@@ -103,15 +103,26 @@ struct GameStructure {
     vector<Projectile> projectiles;
     vector<Enemy> enemies;
     int gold = 0;
+
+    // Escala de tempo do mundo: 1.0 = normal. Na morte do player ela cai ate 0,
+    // e tudo que anda/anima pelo mundo entra em camera lenta e congela junto.
+    float worldTimeScale = 1.0f;
 };
 // Instância que guarda as configurações do jogo
 GameStructure GAME;
+
+// Tempo do frame ja multiplicado pela escala do mundo.
+// Com worldTimeScale = 1 e identico ao GetFrameTime(). O que deve ignorar a
+// camera lenta (a animacao de morte do player, os timers do game over) continua
+// usando GetFrameTime() direto.
+float getWorldDeltaTime() { return GetFrameTime() * GAME.worldTimeScale; }
 
 
 // struct de cada jogador
 struct Players {
     Entity body = {.position = GAME.world.Center};
     int healthPoints = 100;
+    int maxHealthPoints = 100;   // vida cheia, usada para restaurar no inicio de cada run
     int speed = 5;
     int attackPower = 10;
     int defense = 0;
@@ -128,6 +139,10 @@ struct Players {
 
     int currentFrame = 0;
     float frameTimer = 0.0f;
+
+    // morte do player
+    float deathTimer = 0.0f;       // tempo desde a morte (tempo real), move a camera lenta
+    float deathHoldTimer = 0.0f;   // tempo parado no ultimo frame antes do menu
 };
 // Player 1
 Players player;
@@ -278,7 +293,7 @@ void enemyMovement(vector<Enemy>& enemies, int enemyIndex) {
         enemy.enemyState != EnemyState::SEARCHING)
         return;
 
-    const float deltaTime = GetFrameTime();
+    const float deltaTime = getWorldDeltaTime();
     Vector2 direction = { 0.0f, 0.0f };
 
     if (enemy.enemyState == EnemyState::ROAMING) {
@@ -539,6 +554,14 @@ int main() {
     const float attackDistance = 15.0f;
     const int enemyDeathFrames = 5;         // Dead.png do zumbi: 640x128 = 5 frames de 128x128
     const float enemyDeathHoldTime = 5.0f;  // tempo caido no ultimo frame antes de sumir
+    const float playerDeathFrameDuration = 0.15f; // morte do player: mais lenta que os 0,1s do resto
+    const float gameOverDelay = 2.0f;             // tempo travado no ultimo frame antes do menu
+    const float slowMotionStart = 0.35f;          // velocidade do mundo no instante da morte
+    const float slowMotionDuration = 2.0f;        // tempo ate o mundo congelar de vez
+    const float gameOverFadeDuration = 0.5f;      // duracao do escurecimento da tela
+    float gameOverFadeTimer = 0.0f;
+    const Rectangle gameOverWindow = { 440.0f, 230.0f, 400.0f, 260.0f };
+    const Rectangle gameOverMenuButton = { 490.0f, 390.0f, 300.0f, 55.0f };
     const Rectangle startButton = {
         GAME.screen.Center.x - 120.0f,
         GAME.screen.Center.y - 30.0f,
@@ -627,6 +650,20 @@ int main() {
                 GAME.projectiles.clear();
                 GAME.enemies.assign(enemiesAmount, Enemy{});
                 createEnemies(GAME.enemies, enemiesAmount);
+
+                // Reset do player. Os campos sao zerados um a um (e nao com
+                // player = Players{}) justamente para preservar o que foi comprado
+                // na arvore de status: attackPower, defense, speed e os niveis.
+                player.healthPoints = player.maxHealthPoints;
+                player.body.position = GAME.world.Center;
+                player.facingLeft = false;
+                player.deathTimer = 0.0f;
+                player.deathHoldTimer = 0.0f;
+                setPlayerAnimation(PLAYER_IDLE);
+                player.currentFrame = 0;
+                player.frameTimer = 0.0f;
+                GAME.worldTimeScale = 1.0f;
+                gameOverFadeTimer = 0.0f;
 
                 tiles.assign(tiles.size(), FLOOR);  // limpa as paredes da partida anterior
                 for (int i = 0; i < tiles.size(); i++) {
@@ -718,12 +755,11 @@ int main() {
             }
         }
         if (IsKeyPressed(KEY_F1)) GAME.debugModeON = (GAME.debugModeON + 1) % 2;
-        if (IsKeyPressed(KEY_F2)) player.skin = (PlayerSkin)((player.skin + 1) % 3);
-
-        if (player.frameTimer >= frameDuration) {
-            player.frameTimer = 0.0f;
-            player.currentFrame = (player.currentFrame + 1) % getPlayerFrameCount();
-        }
+        // a skin nao muda depois que o player morre: a animacao de morte tem que
+        // terminar na mesma skin em que a run foi jogada
+        if (IsKeyPressed(KEY_F2) &&
+            GAME.gameState != PLAYER_DYING && GAME.gameState != GAME_OVER)
+            player.skin = (PlayerSkin)((player.skin + 1) % 3);
 
         if (GAME.gameState == PAUSED &&
             IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -841,7 +877,7 @@ int main() {
             visibleWorldBottomRight.y - visibleWorldTopLeft.y
         };
 
-        if (GAME.gameState == PLAYING) {
+        if (GAME.gameState == PLAYING || GAME.gameState == PLAYER_DYING) {
             for (int i = 0; i < (int)GAME.enemies.size(); i++) {
                 Enemy& enemy = GAME.enemies[i];
 
@@ -850,25 +886,25 @@ int main() {
                         // Toca a animacao de morte UMA vez e trava no ultimo frame;
                         // dali em diante so conta o tempo caido no chao.
                         if (enemy.deathFrame < enemyDeathFrames - 1) {
-                            enemy.deathFrameTimer += GetFrameTime();
+                            enemy.deathFrameTimer += getWorldDeltaTime();
 
                             if (enemy.deathFrameTimer >= frameDuration) {
                                 enemy.deathFrameTimer = 0.0f;
                                 enemy.deathFrame++;
                             }
                         } else {
-                            enemy.deathHoldTimer += GetFrameTime();
+                            enemy.deathHoldTimer += getWorldDeltaTime();
                         }
                         break;
                     }
 
                     case EnemyState::ATTACKING: {
-                        enemy.attackFrameTimer += GetFrameTime();
+                        enemy.attackFrameTimer += getWorldDeltaTime();
 
                         if (enemy.attackFrameTimer >= frameDuration) {
                             enemy.attackFrameTimer = 0.0f;
 
-                            if (enemy.attackFrame == 2) {
+                            if (enemy.attackFrame == 2 && GAME.gameState == PLAYING) {
                                 float distance = Vector2DistanceSqr(enemy.body.position, player.body.position);
                                 if (distance <= attackDistance * attackDistance) {
                                     player.healthPoints -= enemy.powerPoints;
@@ -888,7 +924,7 @@ int main() {
                     }
 
                     case EnemyState::IDLE: {
-                        enemy.idleTimer -= GetFrameTime();
+                        enemy.idleTimer -= getWorldDeltaTime();
 
                         if (enemy.idleTimer <= 0.0f)
                             enemy.enemyState = EnemyState::SEARCHING;
@@ -919,13 +955,66 @@ int main() {
             }
         }
 
+        // ---------------- MORTE DO PLAYER E GAME OVER ----------------
+        // Dispara no frame em que a vida zera: tira o controle do player, comeca
+        // a animacao de morte e liga a camera lenta.
+        if (GAME.gameState == PLAYING && player.healthPoints <= 0) {
+            player.healthPoints = 0;           // evita vida negativa no HUD
+            GAME.gameState = PLAYER_DYING;
+            setPlayerAnimation(PLAYER_DEAD);   // zera currentFrame e frameTimer
+            player.deathTimer = 0.0f;
+            player.deathHoldTimer = 0.0f;
+            gameOverFadeTimer = 0.0f;
+        }
+
+        if (GAME.gameState == PLAYER_DYING) {
+            // A animacao do player roda em TEMPO REAL: se entrasse na camera lenta
+            // ela congelaria no meio junto com o mundo.
+            const float realDeltaTime = GetFrameTime();
+
+            // mundo desacelerando de slowMotionStart ate parar de vez
+            player.deathTimer += realDeltaTime;
+            GAME.worldTimeScale = slowMotionStart *
+                (1.0f - Clamp(player.deathTimer / slowMotionDuration, 0.0f, 1.0f));
+
+            if (player.currentFrame < getPlayerFrameCount() - 1) {
+                player.frameTimer += realDeltaTime;
+
+                if (player.frameTimer >= playerDeathFrameDuration) {
+                    player.frameTimer = 0.0f;
+                    player.currentFrame++;
+                }
+            } else {
+                // travado no ultimo frame: conta o tempo de leitura antes do menu
+                player.deathHoldTimer += realDeltaTime;
+
+                if (player.deathHoldTimer >= gameOverDelay)
+                    GAME.gameState = GAME_OVER;
+            }
+        }
+
+        if (GAME.gameState == GAME_OVER) {
+            GAME.worldTimeScale = 0.0f;        // mundo parado por baixo do menu
+            gameOverFadeTimer += GetFrameTime();
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+                CheckCollisionPointRec(GetMousePosition(), gameOverMenuButton)) {
+                StopMusicStream(gameMusic);
+                PlayMusicStream(menuMusic);
+                GAME.worldTimeScale = 1.0f;
+                GAME.gameState = MENU;
+            }
+        }
+
         Vector2 mouseScreen = GetMousePosition();
         Vector2 mouseWorld = GetScreenToWorld2D(mouseScreen, camera);
 
         camera.target = (Vector2){player.body.position.x, player.body.position.y};
 
-        if (GAME.gameState == PLAYING) {
-            if (IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (GAME.gameState == PLAYING || GAME.gameState == PLAYER_DYING) {
+            // atirar so enquanto vivo; as balas ja no ar seguem na camera lenta
+            if (GAME.gameState == PLAYING &&
+                IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.body.position));
 
                 Projectile p;
@@ -941,7 +1030,7 @@ int main() {
             for (int i = (int)GAME.projectiles.size() - 1; i >= 0; i--) {
                 Projectile& bullet = GAME.projectiles[i];
 
-                bullet.screenTime += GetFrameTime();
+                bullet.screenTime += getWorldDeltaTime();
 
                 // Colisão das balas com os inimigos
                 for (int j = (int)GAME.enemies.size() - 1; j >= 0; j--) {
@@ -968,7 +1057,8 @@ int main() {
                     continue;
                 }
 
-                bullet.body.position = Vector2Add(bullet.body.position, Vector2Scale(bullet.direction, bullet.body.speed));
+                bullet.body.position = Vector2Add(bullet.body.position,
+                    Vector2Scale(bullet.direction, bullet.body.speed * GAME.worldTimeScale));
             }
 
             // Inimigo sem vida entra em DYING (perde a hitbox e para de agir);
@@ -990,7 +1080,7 @@ int main() {
                 }
             }
 
-            enemyFrameTimer += GetFrameTime();
+            enemyFrameTimer += getWorldDeltaTime();
             if (enemyFrameTimer >= frameDuration) {
                 enemyFrameTimer = 0.0f;
                 enemyCurrentFrame = (enemyCurrentFrame + 1) % 10;
@@ -1130,7 +1220,8 @@ int main() {
                     }
 
                     if (GAME.gameState == PLAYING || GAME.gameState == PAUSED ||
-                        GAME.gameState == SETTINGS) {
+                        GAME.gameState == SETTINGS || GAME.gameState == PLAYER_DYING ||
+                        GAME.gameState == GAME_OVER) {
 
                         for (int i = 0; i < (int)GAME.enemies.size(); i++) {
                             EnemySprites& sprites = getEnemySprites(GAME.enemies[i].type);
@@ -1294,9 +1385,31 @@ int main() {
                     DrawText("ESC: voltar para a pausa", 520, 590, 18, LIGHTGRAY);
                 }
             }
+            if (GAME.gameState == GAME_OVER) {
+                // escurecimento e menu entram juntos, em fade, sobre o mundo congelado
+                float fade = Clamp(gameOverFadeTimer / gameOverFadeDuration, 0.0f, 1.0f);
+
+                DrawRectangle(0, 0, GAME.screen.Width, GAME.screen.Height, Fade(BLACK, 0.7f * fade));
+
+                DrawRectangleRec(gameOverWindow, Fade(DARKGRAY, fade));
+                DrawRectangleLinesEx(gameOverWindow, 3.0f, Fade(WHITE, fade));
+
+                DrawText("GAME OVER",
+                    (int)GAME.screen.Center.x - MeasureText("GAME OVER", 50) / 2,
+                    285, 50, Fade(RED, fade));
+
+                bool gameOverHovered = CheckCollisionPointRec(GetMousePosition(), gameOverMenuButton);
+                DrawRectangleRec(gameOverMenuButton, Fade(gameOverHovered ? BLUE : DARKBLUE, fade));
+                DrawRectangleLinesEx(gameOverMenuButton, 2.0f, Fade(WHITE, fade));
+                DrawText("VOLTAR AO MENU",
+                    (int)(gameOverMenuButton.x + gameOverMenuButton.width / 2.0f) -
+                        MeasureText("VOLTAR AO MENU", 20) / 2,
+                    (int)gameOverMenuButton.y + 17, 20, Fade(WHITE, fade));
+            }
             if (GAME.gameState == MENU || GAME.gameState == STATUS_TREE)
                 DrawText(TextFormat("GOLD: %d", GAME.gold), GAME.screen.Width - 180, 20, 24, GOLD);
-            if (GAME.gameState == PLAYING || GAME.gameState == PAUSED) {
+            if (GAME.gameState == PLAYING || GAME.gameState == PAUSED ||
+                GAME.gameState == PLAYER_DYING) {
                 DrawRectangle(7, 7, 75, 25, WHITE);
                 DrawText(TextFormat("HP: %u", player.healthPoints), 10, 10, 20, RED);
                 if (GAME.debugModeON) {
