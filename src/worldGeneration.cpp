@@ -13,7 +13,7 @@
 static const float treesPerMegapixel  = 14.0f;   // ~350 no mundo atual
 static const float rocksPerMegapixel  = 6.0f;    // ~150
 static const float bushesPerMegapixel = 12.0f;   // ~300
-static const float pondsPerMegapixel  = 0.4f;    // ~10
+static const float pondsPerMegapixel  = 0.0f;    // desligado ate ter sprite de lago
 
 // Agrupamento: quantos props por grupo e qual o raio do grupo em pixels.
 // E isso que vira bosque e pedral em vez de salpicado por igual.
@@ -30,27 +30,123 @@ static const int placementAttempts = 12;
 
 // -----------------------------------------------------------------------------
 
-static Vector2 randomPropSize(PropType type) {
+// ----------------------------- SPRITES -----------------------------
+
+static PropSprites propSprites;   // zerado: id = 0 em tudo ate o main entregar
+
+void setPropSprites(const PropSprites& sprites) {
+    propSprites = sprites;
+}
+
+// Quantas artes diferentes cada tipo tem. Suba junto com a struct PropSprites
+// quando adicionar arte nova.
+static int propVariantCount(PropType type) {
     switch (type) {
-        case PROP_TREE: return { (float)GetRandomValue(40, 56), (float)GetRandomValue(56, 72) };
-        case PROP_ROCK: return { (float)GetRandomValue(32, 48), (float)GetRandomValue(24, 40) };
-        case PROP_BUSH: return { (float)GetRandomValue(24, 32), (float)GetRandomValue(20, 28) };
-        case PROP_POND: return { (float)GetRandomValue(96, 192), (float)GetRandomValue(96, 160) };
+        case PROP_TREE: return 2;
+        case PROP_ROCK: return 1;
+        case PROP_BUSH: return 1;
+        case PROP_POND: return 0;   // sem arte ainda
+    }
+
+    return 0;
+}
+
+// Textura do prop. id == 0 significa "nao carregada": quem chama cai no
+// retangulo de placeholder.
+static Texture2D getPropSprite(PropType type, int variant) {
+    switch (type) {
+        case PROP_TREE: return (variant == 1) ? propSprites.tree2 : propSprites.tree1;
+        case PROP_ROCK: return propSprites.rock;
+        case PROP_BUSH: return propSprites.bush;
+        case PROP_POND: break;   // sem arte ainda
+    }
+
+    return Texture2D{};
+}
+
+// Onde a arte REALMENTE esta dentro da imagem, em fracao de 0 a 1.
+//
+// As imagens sao 128x128 mas o desenho nao preenche tudo: a tree2 ocupa so 37%
+// da largura. Sem isto, pedir "arvore de 90px" daria uma tree2 de 33px perdida
+// no meio de um vazio de 90px - e a geracao ainda reservaria o vazio inteiro.
+// Com isto, prop.size e o tamanho da ARTE, e o desenho estica a imagem para
+// que a arte caia exatamente ali.
+//
+// Medido nos PNGs atuais; refaca a conta se trocar a arte.
+static Rectangle propContentRect(PropType type, int variant) {
+    switch (type) {
+        case PROP_TREE:
+            return (variant == 1)
+                ? (Rectangle){ 0.3125f, 0.1250f, 0.3672f, 0.8750f }   // tree2
+                : (Rectangle){ 0.1484f, 0.0703f, 0.6875f, 0.9297f };  // tree1
+
+        case PROP_ROCK: return { 0.1016f, 0.4609f, 0.7891f, 0.5391f };
+        case PROP_BUSH: return { 0.1484f, 0.4609f, 0.7188f, 0.5391f };
+        case PROP_POND: break;
+    }
+
+    return { 0.0f, 0.0f, 1.0f, 1.0f };   // imagem inteira
+}
+
+// Proporcao altura/largura da ARTE (nao da imagem). Sai do sprite carregado,
+// entao trocar o PNG por outro de formato diferente reajusta o mundo sozinho.
+static float propAspectRatio(PropType type, int variant) {
+    Texture2D sprite = getPropSprite(type, variant);
+    Rectangle content = propContentRect(type, variant);
+
+    if (sprite.id > 0 && sprite.width > 0 && content.width > 0.0f)
+        return (content.height * sprite.height) / (content.width * sprite.width);
+
+    // sem textura: proporcao medida na arte, para a geracao nao mudar de cara
+    switch (type) {
+        case PROP_TREE: return (variant == 1) ? 2.38f : 1.35f;
+        case PROP_ROCK: return 0.68f;
+        case PROP_BUSH: return 0.75f;
+        case PROP_POND: return 0.90f;
+    }
+
+    return 1.0f;
+}
+
+// Sorteia so a LARGURA da arte; a altura vem da proporcao do sprite. E isso que
+// impede a arte de esticar torta: props do mesmo tipo variam de tamanho, nunca
+// de formato.
+static Vector2 randomPropSize(PropType type, int variant) {
+    float width = 32.0f;
+
+    switch (type) {
+        case PROP_TREE:
+            width = (variant == 1)
+                ? (float)GetRandomValue(48, 62)     // tronco alto e fino
+                : (float)GetRandomValue(78, 102);   // pinheiro largo
+            break;
+
+        case PROP_ROCK: width = (float)GetRandomValue(50, 70); break;
+        case PROP_BUSH: width = (float)GetRandomValue(36, 52); break;
+        case PROP_POND: width = (float)GetRandomValue(96, 192); break;
     }
 
     // Sem default no switch de proposito: assim o -Wswitch avisa se um tipo
     // novo entrar no enum e esquecerem de dar tamanho a ele aqui.
-    return { 32.0f, 32.0f };
+
+    return { width, width * propAspectRatio(type, variant) };
 }
 
 // Quanto do desenho e solido, por tipo.
 // x = fracao da largura (centralizada), y = fracao da altura (ancorada embaixo).
 // {0, 0} significa que da para atravessar o prop.
-static Vector2 propCollisionFraction(PropType type) {
+// Medido na arte: o pinheiro so mostra tronco nos 5% de baixo (os galhos
+// descem quase ate o chao), enquanto a tree2 tem tronco limpo por 30% da
+// altura. Por isso a fracao e por VARIANTE, nao so por tipo.
+static Vector2 propCollisionFraction(PropType type, int variant) {
     switch (type) {
-        case PROP_TREE: return { 0.45f, 0.22f };   // so o tronco
-        case PROP_ROCK: return { 0.90f, 0.70f };   // quase a pedra inteira
-        case PROP_BUSH: return { 0.00f, 0.00f };   // arbusto da para atravessar
+        case PROP_TREE:
+            return (variant == 1)
+                ? (Vector2){ 0.34f, 0.18f }    // tree2: tronco fino e alto
+                : (Vector2){ 0.38f, 0.09f };   // tree1: so a base do pinheiro
+
+        case PROP_ROCK: return { 0.90f, 0.55f };   // a pedra e macica
+        case PROP_BUSH: return { 0.00f, 0.00f };   // atravessavel
         case PROP_POND: return { 1.00f, 1.00f };   // a agua inteira
     }
 
@@ -58,7 +154,7 @@ static Vector2 propCollisionFraction(PropType type) {
 }
 
 Rectangle getPropCollisionRect(const Prop& prop) {
-    Vector2 fraction = propCollisionFraction(prop.type);
+    Vector2 fraction = propCollisionFraction(prop.type, prop.variant);
 
     float width  = prop.size.x * fraction.x;
     float height = prop.size.y * fraction.y;
@@ -115,7 +211,8 @@ static bool tryPlaceProp(std::vector<Prop>& props,
                          const WorldGenConfig& config,
                          PropType type,
                          Vector2 position,
-                         Vector2 size) {
+                         Vector2 size,
+                         int variant) {
     // area limpa em volta do ponto onde o player nasce
     float centerX = position.x + size.x / 2.0f;
     float centerY = position.y + size.y / 2.0f;
@@ -153,7 +250,7 @@ static bool tryPlaceProp(std::vector<Prop>& props,
         for (int tileX = firstTileX; tileX <= lastTileX; tileX++)
             tiles[tileY * config.mapWidthInTiles + tileX] = stamp;
 
-    props.push_back({ type, position, size });
+    props.push_back({ type, position, size, variant });
     return true;
 }
 
@@ -186,7 +283,11 @@ static void placeClusteredProps(std::vector<Prop>& props,
 
         for (int i = 0; i < perCluster && placed < totalCount; i++) {
             for (int attempt = 0; attempt < placementAttempts; attempt++) {
-                Vector2 size = randomPropSize(type);
+                // a arte e sorteada antes do tamanho: e ela que da a proporcao
+                int variants = propVariantCount(type);
+                int variant = (variants > 1) ? GetRandomValue(0, variants - 1) : 0;
+
+                Vector2 size = randomPropSize(type, variant);
                 Vector2 position = {
                     clusterCenter.x + GetRandomValue(-clusterRadius, clusterRadius),
                     clusterCenter.y + GetRandomValue(-clusterRadius, clusterRadius)
@@ -198,7 +299,7 @@ static void placeClusteredProps(std::vector<Prop>& props,
                     position.y + size.y >= (float)worldHeight)
                     continue;
 
-                if (tryPlaceProp(props, tiles, config, type, position, size)) {
+                if (tryPlaceProp(props, tiles, config, type, position, size, variant)) {
                     placed++;
                     break;
                 }
@@ -237,11 +338,11 @@ void generateWorld(std::vector<Prop>& props,
 bool isGroundProp(PropType type) {
     switch (type) {
         case PROP_POND:
-        case PROP_BUSH:
-            return true;   // agua e mato baixo: o personagem passa por cima
+            return true;   // agua: plana, sempre embaixo de todo mundo
 
         case PROP_TREE:
         case PROP_ROCK:
+        case PROP_BUSH:
             return false;  // tem altura: da para ficar atras
     }
 
@@ -251,9 +352,38 @@ bool isGroundProp(PropType type) {
 void drawProp(const Prop& prop, bool showCollision) {
     Rectangle rect = { prop.position.x, prop.position.y, prop.size.x, prop.size.y };
 
-    // ---- PLACEHOLDER: trocar por DrawTexturePro quando os sprites existirem ----
-    DrawRectangleRec(rect, getPropColor(prop.type));
-    DrawRectangleLinesEx(rect, 2.0f, getPropOutlineColor(prop.type));
+    Texture2D sprite = getPropSprite(prop.type, prop.variant);
+
+    if (sprite.id > 0) {
+        // rect e o tamanho da ARTE. Como a imagem tem padding transparente em
+        // volta, o destino e esticado para fora, de modo que a arte caia
+        // exatamente em rect - inclusive com a base encostando embaixo, que e
+        // o que a ordenacao por Y e a colisao assumem.
+        Rectangle content = propContentRect(prop.type, prop.variant);
+
+        float fullWidth  = rect.width  / content.width;
+        float fullHeight = rect.height / content.height;
+
+        Rectangle destination = {
+            rect.x - content.x * fullWidth,
+            rect.y - content.y * fullHeight,
+            fullWidth,
+            fullHeight
+        };
+
+        DrawTexturePro(
+            sprite,
+            (Rectangle){ 0, 0, (float)sprite.width, (float)sprite.height },
+            destination,
+            (Vector2){ 0, 0 },
+            0.0f,
+            WHITE
+        );
+    } else {
+        // Tipo ainda sem arte: retangulo colorido de placeholder.
+        DrawRectangleRec(rect, getPropColor(prop.type));
+        DrawRectangleLinesEx(rect, 2.0f, getPropOutlineColor(prop.type));
+    }
 
     if (showCollision) {
         Rectangle solid = getPropCollisionRect(prop);
