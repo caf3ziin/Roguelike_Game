@@ -1,7 +1,11 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "debug.h"
+#include "skillTreeDescriptions.h"
+#include "worldGeneration.h"
+#include <algorithm>   // sort, para a ordenacao por Y do desenho
 #include <math.h>
+#include <stdio.h>   // sscanf, para ler o settings.txt
 #include <vector>
 #include <random>
 #include <ctime>
@@ -9,17 +13,16 @@
 
 using namespace std;
 
-mt19937 gen{}; 
+mt19937 gen{};
 
 //-----------------------------------------------------------------------------------------
 // ENUMS
 enum PlayerSkin { KITSUNE, GANGSTER, SOLDIER};
-enum EnemyType { ZOMBIE, /* ORC, SKELETON */};
+enum EnemyType { ZOMBIE, MINOTAUR_1, MINOTAUR_2, MINOTAUR_3 };
 enum PlayerAnimation { PLAYER_RUN, PLAYER_IDLE, PLAYER_ATTACK, PLAYER_DEAD};
 
-enum GameState { MENU, PLAYING, INVENTORY, MAP, STATUS_TREE, PAUSED, SETTINGS };
-enum EnemyState { ROAMING, SEARCHING, ATTACKING, IDLE};
-enum TileType { FLOOR, WALL, WATER };
+enum GameState { MENU, PLAYING, MAP, STATUS_TREE, PAUSED, SETTINGS, PLAYER_DYING, GAME_OVER };
+enum EnemyState { ROAMING, SEARCHING, ATTACKING, IDLE, DYING};
 
 //------------------------------------------------------------------------------------------
 //------------------------------------------------------------------------------------------
@@ -31,7 +34,7 @@ struct Collider {
     Vector2 offset = { 0, 24 };    // deslocamento a partir do centro da entidade
 };
 
-// struct que guarda a posição, a velocidade e a hitbox (collider) de cada entidade do jogo 
+// struct que guarda a posição, a velocidade e a hitbox (collider) de cada entidade do jogo
 struct Entity {
     Vector2 position = { 0, 0 };
     float speed = 5.0f;
@@ -64,15 +67,42 @@ struct Enemy {
     int attackFrame = 0;
     float attackFrameTimer = 0.0f;
     float idleTimer = 0.0f;
+
+    // animação de morte (cada inimigo morre no seu proprio tempo,
+    // por isso o frame e os timers são de cada um, não compartilhados)
+    int deathFrame = 0;
+    float deathFrameTimer = 0.0f;
+    float deathHoldTimer = 0.0f;
+
+    float hitFlashTimer = 0.0f;
+};
+
+// Ouro largado no chao por um inimigo morto. Fica parado ate o player chegar
+// perto; dentro do raio do imã ele e puxado e coletado ao encostar.
+struct GoldDrop {
+    Vector2 position = { 0, 0 };
+    int value = 1;
+    float bobTimer = 0.0f;    // balancinho vertical, puramente visual
+    float pullSpeed = 0.0f;   // velocidade atual da atracao (acelera enquanto puxa)
+
+    int currentFrame = 0;
+    float frameTimer = 0.0f;
+};
+
+// Machado dropado por um chefe. Ao chegar perto dele, o jogador pega o item
+// e passa a usar o ataque melee ao pressionar o botao direito do mouse.
+struct AxeDrop {
+    Vector2 position = { 0, 0 };
+    float bobTimer = 0.0f;
 };
 
 // ESTRUTURA DE CONFIGURAÇÕES GERAIS DO JOGO
 struct GameStructure {
     GameState gameState = MENU;      // variável que guarda o estado do jogo para recursos de menu e mapa
     static const int TILE = 32;         // tamanho de cada "quadrado" da matriz em pixels
-    static const int MAP_W = 94;        // largura (width) do mapa em tiles ("quadrados") na matriz do jogo
-    static const int MAP_H = 94;        // altura (height) do mapa em tiles ("quadrados") na matriz do jogo
-    // mundo em pixels = MAP_W * TILE = 3008 pixels
+    static const int MAP_W = 157;       // largura (width) do mapa em tiles ("quadrados") na matriz do jogo
+    static const int MAP_H = 157;       // altura (height) do mapa em tiles ("quadrados") na matriz do jogo
+    // mundo em pixels = MAP_W * TILE = 5024 pixels
 
     bool debugModeON = false;
 
@@ -96,16 +126,37 @@ struct GameStructure {
 
     vector<Projectile> projectiles;
     vector<Enemy> enemies;
-    int gold = 0;
+    vector<GoldDrop> goldDrops;
+    vector<AxeDrop> axeDrops;
+    bool axeOwned = false;
+    bool axeDropped = false;
+    float axeCooldownTimer = 0.0f;
+    float axeSwingTimer = 0.0f;
+    Vector2 axeSwingDirection = { 1.0f, 0.0f };
+    int gold = 100;        // ouro total, gasto na arvore de status
+    int runGold = 0;     // ouro coletado so nesta run (para a tela de game over)
+    int normalZombiesKilled = 0;
+    int bossesSpawned = 0;
+
+    // Escala de tempo do mundo: 1.0 = normal. Na morte do player ela cai ate 0,
+    // e tudo que anda/anima pelo mundo entra em camera lenta e congela junto.
+    float worldTimeScale = 1.0f;
 };
 // Instância que guarda as configurações do jogo
 GameStructure GAME;
+
+// Tempo do frame ja multiplicado pela escala do mundo.
+// Com worldTimeScale = 1 e identico ao GetFrameTime(). O que deve ignorar a
+// camera lenta (a animacao de morte do player, os timers do game over) continua
+// usando GetFrameTime() direto.
+float getWorldDeltaTime() { return GetFrameTime() * GAME.worldTimeScale; }
 
 
 // struct de cada jogador
 struct Players {
     Entity body = {.position = GAME.world.Center};
     int healthPoints = 100;
+    int maxHealthPoints = 100;   // vida cheia, usada para restaurar no inicio de cada run
     int speed = 5;
     int attackPower = 10;
     int defense = 0;
@@ -113,13 +164,24 @@ struct Players {
     int defenseLevel = 0;
     int movementLevel = 0;
 
+    // ramo do ouro: ainda sem nos na arvore, mas as formulas de drop ja leem daqui
+    int goldLevel = 0;         // quantos nos do ramo do ouro ja foram comprados
+    int goldDropLevel = 0;     // aumenta a CHANCE de dropar
+    int goldAmountLevel = 0;   // aumenta a QUANTIDADE dropada
+
     bool facingLeft = false;
 
     PlayerSkin skin = KITSUNE;
     PlayerAnimation animation = PLAYER_IDLE;
-  
+
+    Vector2 projectileOffset = { 0, 15 };
+
     int currentFrame = 0;
     float frameTimer = 0.0f;
+
+    // morte do player
+    float deathTimer = 0.0f;       // tempo desde a morte (tempo real), move a camera lenta
+    float deathHoldTimer = 0.0f;   // tempo parado no ultimo frame antes do menu
 };
 // Player 1
 Players player;
@@ -148,12 +210,23 @@ void drawWingIcon(Vector2 center, Color color) {
     DrawLineEx(center, {center.x + 9.0f, center.y + 10.0f}, 3.0f, color);
 }
 
+void drawCoinIcon(Vector2 center, Color color) {
+    DrawCircleLines((int)center.x, (int)center.y, 11.0f, color);
+    DrawCircleLines((int)center.x, (int)center.y, 7.0f, color);
+    DrawLineEx({center.x, center.y - 8.0f}, {center.x, center.y + 8.0f}, 2.0f, color);
+}
+
 void drawStatusNode(Vector2 center, float radius, bool purchased, bool available, int cost, int icon) {
-    Color nodeColor = purchased || available ? GRAY : BLACK;
+    // comprado = verde cheio; da pra comprar = cinza claro; travado = preto
+    Color nodeColor = purchased ? DARKGREEN : (available ? GRAY : BLACK);
+    Color ringColor = purchased ? GREEN : WHITE;
     Color iconColor = purchased || available ? WHITE : GRAY;
 
     DrawCircleV(center, radius, nodeColor);
-    DrawCircleLines((int)center.x, (int)center.y, radius, WHITE);
+    DrawCircleLines((int)center.x, (int)center.y, radius, ringColor);
+
+    if (purchased)   // anel um pouco mais grosso para destacar o que ja e seu
+        DrawCircleLines((int)center.x, (int)center.y, radius - 1.0f, ringColor);
 
     if (icon == 0)
         drawSwordIcon(center, iconColor);
@@ -161,19 +234,14 @@ void drawStatusNode(Vector2 center, float radius, bool purchased, bool available
         drawShieldIcon(center, iconColor);
     else if (icon == 2)
         drawWingIcon(center, iconColor);
+    else if (icon == 3)
+        drawCoinIcon(center, iconColor);
 
     if (!purchased)
         DrawText(TextFormat("%d", cost), (int)center.x - 5, (int)center.y + radius + 3, 12, WHITE);
 }
 
-void drawDefenseStatusNode(
-    Vector2 center,
-    float radius,
-    bool purchased,
-    bool available,
-    int cost,
-    Texture2D defenseIcon
-) {
+void drawDefenseStatusNode(Vector2 center, float radius, bool purchased, bool available, int cost, Texture2D defenseIcon) {
     drawStatusNode(center, radius, purchased, available, cost, -1);
 
     float iconSize = radius * 1.55f;
@@ -194,18 +262,34 @@ struct PlayerSprites {
     Texture2D dead;
     Vector2 offset = { 4.0f, 0.0f };    // ajuste do boneco dentro do frame
 };
-
 PlayerSprites kitsuneSprites;
 PlayerSprites gangsterSprites;
 PlayerSprites soldierSprites;
 
 struct EnemySprites {
     Texture2D walk;
+    Texture2D idle;
     Texture2D attack;
     Texture2D dead;
+    int walkFrames = 1;
+    int idleFrames = 1;
+    int attackFrames = 1;
+    int deadFrames = 1;
 };
-
 EnemySprites zombieSprites;
+EnemySprites minotaur1Sprites;
+EnemySprites minotaur2Sprites;
+EnemySprites minotaur3Sprites;
+
+
+struct EffectsSprites {
+    Texture2D coin;
+    Texture2D axe;
+};
+EffectsSprites effectsSprites;
+
+
+static PropSprites propSprites;
 
 // FIM DAS STRUCTS
 //------------------------------------------------------------------------------------------
@@ -213,7 +297,9 @@ EnemySprites zombieSprites;
 // INICIO DAS FUNCOES
 
 // Vetor unidimensional que guarda os tipos de tiles
-vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);                
+vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);
+// Props do cenario (arvore, pedra, arbusto, lago), gerados a cada run
+vector<Prop> worldProps;
 TileType& tileAt(int x, int y) { return tiles[y * GAME.MAP_W + x]; }        // Função que retorna o tipo do tile na posição (x, y)
 
 
@@ -223,7 +309,7 @@ bool isWall(float x, float y) {
 
     if (tileX < 0 || tileY < 0 || tileX >= GAME.MAP_W || tileY >= GAME.MAP_H) return true;
 
-    return tileAt(tileX, tileY) == WALL;
+    return tileAt(tileX, tileY) != FLOOR;   // WALL e WATER bloqueiam
 }
 
 
@@ -238,38 +324,154 @@ Rectangle getHitbox(Vector2 pos, const Collider& c) {
 }
 
 
-// Gera os inimigos na volta do personagem
-void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
-    uniform_int_distribution<int> ranHeight(0, GAME.MAP_H * GAME.TILE - 40); 
-    uniform_int_distribution<int> ranWidth(0, GAME.MAP_W * GAME.TILE - 40); 
+// true se a hitbox nessa posicao cobre algum tile solido.
+// Testa a FAIXA INTEIRA de tiles, e nao so os quatro cantos: a hitbox do player
+// tem 64px de altura, entao um tile solido caberia inteiro entre dois cantos e
+// passaria despercebido.
+bool hitsWall(Vector2 position, const Collider& collider) {
+    Rectangle box = getHitbox(position, collider);
 
-    for(int i = 0; i < enemiesAmount; i++){
-        do {
-            enemies[i].body.position = {
-                (float)ranWidth(gen),
-                (float)ranHeight(gen)
-            };
+    // 1) Borda do mundo, testada em pixels (indice de tile negativo trunca para
+    //    zero em C++ e deixaria passar quem esta saindo pela esquerda/topo).
+    if (box.x < 0.0f || box.y < 0.0f ||
+        box.x + box.width  > (float)GAME.world.Width ||
+        box.y + box.height > (float)GAME.world.Height)
+        return true;
 
-        } while (Vector2Distance(enemies[i].body.position, player.body.position) < 150);
+    // 2) Peneira rapida no grid. O carimbo de um prop e sempre MAIOR que a
+    //    parte solida dele, entao nenhum tile tocado aqui significa, com
+    //    certeza, nenhuma colisao - e sai sem olhar prop nenhum.
+    //    Testa a faixa inteira de tiles, e nao so os quatro cantos: a hitbox do
+    //    player tem 64px de altura, e um tile caberia inteiro entre dois cantos.
+    int firstTileX = (int)(box.x / GAME.TILE);
+    int firstTileY = (int)(box.y / GAME.TILE);
+    int lastTileX  = (int)((box.x + box.width  - 1) / GAME.TILE);
+    int lastTileY  = (int)((box.y + box.height - 1) / GAME.TILE);
 
-        enemies[i].body.collider.offset = { 0, 25 };
-        enemies[i].body.collider.size   = { 20, 50 };
+    bool maybeBlocked = false;
+
+    for (int tileY = firstTileY; tileY <= lastTileY && !maybeBlocked; tileY++)
+        for (int tileX = firstTileX; tileX <= lastTileX; tileX++)
+            if (tileAt(tileX, tileY) != FLOOR) {
+                maybeBlocked = true;
+                break;
+            }
+
+    if (!maybeBlocked)
+        return false;
+
+    // 3) Confirmacao exata contra a BASE do prop. E este passo que tira a
+    //    barreira de ar: o grid arredonda para tiles de 32px, o retangulo nao.
+    return propsBlock(worldProps, box);
+}
+
+
+// Move testando UM EIXO DE CADA VEZ. Batendo numa arvore, a entidade para
+// naquele eixo mas continua andando no outro: ela desliza contornando o
+// obstaculo em vez de grudar nele.
+Vector2 moveWithCollision(Vector2 position, Vector2 delta, const Collider& collider) {
+    Vector2 result = position;
+
+    Vector2 tryX = { result.x + delta.x, result.y };
+    if (!hitsWall(tryX, collider))
+        result = tryX;
+
+    Vector2 tryY = { result.x, result.y + delta.y };
+    if (!hitsWall(tryY, collider))
+        result = tryY;
+
+    return result;
+}
+
+
+Enemy createEnemy(EnemyType type) {
+    Enemy enemy;
+    enemy.type = type;
+
+    switch (type) {
+        case MINOTAUR_1:
+            enemy.body.speed = 1.6f;
+            enemy.healthPoints = 500;
+            enemy.powerPoints = 15;
+            break;
+
+        case MINOTAUR_2:
+            enemy.body.speed = 1.8f;
+            enemy.healthPoints = 900;
+            enemy.powerPoints = 20;
+            break;
+
+        case MINOTAUR_3:
+            enemy.body.speed = 2.0f;
+            enemy.healthPoints = 1400;
+            enemy.powerPoints = 25;
+            break;
+
+        case ZOMBIE:
+        default:
+            enemy.body.speed = 2.0f;
+            enemy.healthPoints = 50;
+            enemy.powerPoints = 5;
+            break;
     }
 
+    uniform_int_distribution<int> ranHeight(0, GAME.MAP_H * GAME.TILE - 40);
+    uniform_int_distribution<int> ranWidth(0, GAME.MAP_W * GAME.TILE - 40);
+
+    // o collider vem antes da posicao porque o teste de parede usa ele
+    enemy.body.collider.offset = { 0, 25 };
+    enemy.body.collider.size = type == ZOMBIE
+        ? Vector2{ 20, 50 }
+        : Vector2{ 34, 64 };
+
+    // Procura um lugar longe do player e fora de arvore/pedra/lago.
+    // O limite de tentativas evita laco infinito se o mapa estiver cheio.
+    const int maxSpawnAttempts = 50;
+
+    for (int attempt = 0; attempt < maxSpawnAttempts; attempt++) {
+        enemy.body.position = {
+            (float)ranWidth(gen),
+            (float)ranHeight(gen)
+        };
+
+        if (Vector2Distance(enemy.body.position, player.body.position) >= 150 &&
+            !hitsWall(enemy.body.position, enemy.body.collider))
+            break;
+    }
+
+    return enemy;
+}
+
+// Gera os inimigos na volta do personagem
+void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
+    for (int i = 0; i < enemiesAmount; i++)
+        enemies.push_back(createEnemy(ZOMBIE));
+}
+
+void spawnEnemy(vector<Enemy>& enemies, EnemyType type) {
+    enemies.push_back(createEnemy(type));
 }
 
 // Move os inimigos em direção ao player de acordo com sua posição (x, y)
-void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
+// OBS: o tamanho do vetor é lido com enemies.size() porque inimigos mortos são
+// removidos do vetor durante a partida (a quantidade não é mais fixa).
+void enemyMovement(vector<Enemy>& enemies, int enemyIndex) {
     Enemy& enemy = enemies[enemyIndex];
+    const bool isBoss =
+        enemy.type == MINOTAUR_1 ||
+        enemy.type == MINOTAUR_2 ||
+        enemy.type == MINOTAUR_3;
 
-    if (enemy.enemyState == EnemyState::IDLE ||
-        enemy.enemyState == EnemyState::ATTACKING)
+    // Lista de permissao: so anda quem esta ROAMING ou SEARCHING.
+    // Assim, qualquer estado novo (DYING, etc.) ja nasce parado por padrao.
+    if (enemy.enemyState != EnemyState::ROAMING &&
+        enemy.enemyState != EnemyState::SEARCHING)
         return;
 
-    const float deltaTime = GetFrameTime();
+    const float deltaTime = getWorldDeltaTime();
     Vector2 direction = { 0.0f, 0.0f };
 
-    if (enemy.enemyState == EnemyState::ROAMING) {
+    if (enemy.enemyState == EnemyState::ROAMING && !isBoss) {
         if (enemy.roamingMovementTimer <= 0.0f) {
             uniform_int_distribution<int> ranDirection(0, 3);
             uniform_real_distribution<float> ranDuration(1.0f, 3.0f);
@@ -289,7 +491,7 @@ void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
 
         enemy.roamingMovementTimer -= deltaTime;
         direction = enemy.roamingDirection;
-    } else if (enemy.enemyState == EnemyState::SEARCHING) {
+    } else if (enemy.enemyState == EnemyState::SEARCHING || isBoss) {
         direction = Vector2Subtract(player.body.position, enemy.body.position);
     }
 
@@ -310,8 +512,9 @@ void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
 
     const float minimumDistance = 15.0f;
 
-    for (int i = 0; i < enemiesAmount; i++) {
-        if (i == enemyIndex)
+    for (int i = 0; i < (int)enemies.size(); i++) {
+        // o proprio inimigo e os que estao morrendo nao bloqueiam a passagem
+        if (i == enemyIndex || enemies[i].enemyState == EnemyState::DYING)
             continue;
 
         if (Vector2Distance(nextPosition, enemies[i].body.position) < minimumDistance) {
@@ -319,7 +522,24 @@ void enemyMovement(vector<Enemy>& enemies, int enemyIndex, int enemiesAmount) {
         }
     }
 
-    enemy.body.position = nextPosition;
+    Vector2 delta = Vector2Subtract(nextPosition, enemy.body.position);
+    Vector2 moved;
+
+    if (isBoss) {
+        moved = nextPosition;
+        moved.x = Clamp(moved.x, 0.0f, (float)GAME.world.Width);
+        moved.y = Clamp(moved.y, 0.0f, (float)GAME.world.Height);
+    } else {
+        moved = moveWithCollision(enemy.body.position, delta, enemy.body.collider);
+    }
+
+    // Bateu numa parede enquanto vagava sem rumo: sorteia outra direcao agora,
+    // em vez de ficar empurrando o obstaculo ate o timer de roaming acabar.
+    if (enemy.enemyState == EnemyState::ROAMING &&
+        moved.x == enemy.body.position.x && moved.y == enemy.body.position.y)
+        enemy.roamingMovementTimer = 0.0f;
+
+    enemy.body.position = moved;
 }
 
 PlayerSprites& getPlayerSprites() {
@@ -370,7 +590,7 @@ int getPlayerFrameCount() {
         case KITSUNE:
             switch (player.animation) {
                 case PLAYER_DEAD: return 10;
-                default: return 8;
+                case PLAYER_IDLE: case PLAYER_ATTACK: case PLAYER_RUN: return 8;
             }
 
         case GANGSTER:
@@ -406,24 +626,69 @@ void setPlayerAnimation(PlayerAnimation animation) {
 
 EnemySprites& getEnemySprites(EnemyType type) {
     switch (type) {
+        case MINOTAUR_1:
+            return minotaur1Sprites;
+
+        case MINOTAUR_2:
+            return minotaur2Sprites;
+
+        case MINOTAUR_3:
+            return minotaur3Sprites;
+
         case ZOMBIE:
         default:
             return zombieSprites;
     }
 }
 
+// ---------------- CONFIGURACOES SALVAS EM DISCO ----------------
+// Um txt simples ao lado do executavel. O ChangeDirectory no inicio da main
+// garante que esse caminho relativo caia na pasta certa.
+const char* settingsFilePath = "settings.txt";
+
+int loadMusicVolume(int defaultVolume) {
+    if (!FileExists(settingsFilePath))
+        return defaultVolume;
+
+    char* fileText = LoadFileText(settingsFilePath);
+    if (fileText == nullptr)
+        return defaultVolume;
+
+    int volume = defaultVolume;
+    if (sscanf(fileText, "musicVolume=%d", &volume) != 1)
+        volume = defaultVolume;   // arquivo existe mas nao esta no formato esperado
+
+    UnloadFileText(fileText);
+
+    // o arquivo pode ter sido editado na mao: nao confie no numero
+    return (int)Clamp((float)volume, 0.0f, 100.0f);
+}
+
+void saveMusicVolume(int volume) {
+    // SaveFileText pede char* (nao const), dai o cast
+    SaveFileText(settingsFilePath, (char*)TextFormat("musicVolume=%d\n", volume));
+}
+
 /*
     TODO:
-        - Colisão das balas
-        - Geração de inimigos
-        - IA dos inimigos
-        - sistema de vida e dano do player
-        - Sistema de itens
-        - pegar sprites para o player, cenário, inimigos, projéteis, etc
         - criar diferentes tipos de projéteis
         - criar armas corpo a corpo
+        - adicionar música "Never Gonna Give You Up - 8 bit" como easter egg
         - criar a geração de fases do mundo
+        - criar sistema de xp e levels
+        - criar geração de poderes aleatórios a cada level novo
 */
+
+
+// Item da fila de desenho ordenada por Y. Ver o bloco "ORDENACAO POR Y" no
+// desenho do mundo.
+enum DrawKind { DRAW_PROP, DRAW_ENEMY, DRAW_PLAYER };
+
+struct DrawItem {
+    float sortY;     // o PE do objeto: quem tem o pe mais embaixo fica na frente
+    DrawKind kind;
+    int index;       // posicao no vetor correspondente ao kind
+};
 
 
 // raylib.com
@@ -440,13 +705,13 @@ int main() {
     tempbullet.body.collider.offset = { 0, 0 };
     tempbullet.body.collider.size = { 10, 8 };
 
-    const int enemiesAmount = 20;
+    const int enemiesAmount = 50;
     GAME.enemies.resize(enemiesAmount);
-    
+
     // Initialization
     //-------------------------------------------------------------------------------------
     ChangeDirectory(GetApplicationDirectory());                         // Muda o diretório de inicialiçação para o diretório onde se encontra o executável
-    InitWindow(GAME.screen.Width, GAME.screen.Height, "Roguelike");     // INICIALIZAÇÃO DA JANELA (INIT-WINDOW)
+    InitWindow(GAME.screen.Width, GAME.screen.Height, "DENUO - A Roguelike Project");     // INICIALIZAÇÃO DA JANELA (INIT-WINDOW)
     InitAudioDevice();
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
     SetExitKey(KEY_NULL);           // Retira o ESC como tecla de fechar o jogo
@@ -455,7 +720,7 @@ int main() {
     Music gameMusic = LoadMusicStream("resources/audio/gameMusic.ogg");
     menuMusic.looping = true;
     gameMusic.looping = true;
-    int musicVolume = 15;
+    int musicVolume = loadMusicVolume(15);   // 15 e o padrao de quem nunca abriu as configuracoes
     SetMusicVolume(menuMusic, musicVolume / 100.0f);
     SetMusicVolume(gameMusic, musicVolume / 100.0f);
     PlayMusicStream(menuMusic);
@@ -492,11 +757,56 @@ int main() {
 
     zombieSprites.walk =
         loadSprite("resources/sprites/enemy/zombie/Walk.png", WHITE);
+    zombieSprites.idle =
+        loadSprite("resources/sprites/enemy/zombie/Idle.png", WHITE);
 
     zombieSprites.attack =
         loadSprite("resources/sprites/enemy/zombie/Attack.png", WHITE);
     zombieSprites.dead =
         loadSprite("resources/sprites/enemy/zombie/Dead.png", WHITE);
+    zombieSprites.walkFrames = 10;
+    zombieSprites.idleFrames = zombieSprites.idle.width / 128;
+    zombieSprites.attackFrames = 4;
+    zombieSprites.deadFrames = 5;
+
+    minotaur1Sprites.walk =
+        loadSprite("resources/sprites/enemy/Minotaur_1/Walk.png", WHITE);
+    minotaur1Sprites.idle =
+        loadSprite("resources/sprites/enemy/Minotaur_1/Idle.png", WHITE);
+    minotaur1Sprites.attack =
+        loadSprite("resources/sprites/enemy/Minotaur_1/Attack.png", WHITE);
+    minotaur1Sprites.dead =
+        loadSprite("resources/sprites/enemy/Minotaur_1/Dead.png", WHITE);
+    minotaur1Sprites.walkFrames = 12;
+    minotaur1Sprites.idleFrames = minotaur1Sprites.idle.width / 128;
+    minotaur1Sprites.attackFrames = 5;
+    minotaur1Sprites.deadFrames = 5;
+
+    minotaur2Sprites.walk =
+        loadSprite("resources/sprites/enemy/Minotaur_2/Walk.png", WHITE);
+    minotaur2Sprites.idle =
+        loadSprite("resources/sprites/enemy/Minotaur_2/Idle.png", WHITE);
+    minotaur2Sprites.attack =
+        loadSprite("resources/sprites/enemy/Minotaur_2/Attack.png", WHITE);
+    minotaur2Sprites.dead =
+        loadSprite("resources/sprites/enemy/Minotaur_2/Dead.png", WHITE);
+    minotaur2Sprites.walkFrames = 12;
+    minotaur2Sprites.idleFrames = minotaur2Sprites.idle.width / 128;
+    minotaur2Sprites.attackFrames = 5;
+    minotaur2Sprites.deadFrames = 5;
+
+    minotaur3Sprites.walk =
+        loadSprite("resources/sprites/enemy/Minotaur_3/Walk.png", WHITE);
+    minotaur3Sprites.idle =
+        loadSprite("resources/sprites/enemy/Minotaur_3/Idle.png", WHITE);
+    minotaur3Sprites.attack =
+        loadSprite("resources/sprites/enemy/Minotaur_3/Attack.png", WHITE);
+    minotaur3Sprites.dead =
+        loadSprite("resources/sprites/enemy/Minotaur_3/Dead.png", WHITE);
+    minotaur3Sprites.walkFrames = 12;
+    minotaur3Sprites.idleFrames = minotaur3Sprites.idle.width / 128;
+    minotaur3Sprites.attackFrames = 4;
+    minotaur3Sprites.deadFrames = 5;
 
     //
     //--------------------------------------------------------------------------------------
@@ -506,7 +816,18 @@ int main() {
     Texture2D background = LoadTexture("resources/backgrounds/grassBackground.png");
     Texture2D menuBackground = LoadTexture("resources/backgrounds/menuBackground.png");
     Texture2D skillTreeBackground = LoadTexture("resources/backgrounds/skillTreeBackground.png");
-    Texture2D defenseStatsIcon = LoadTexture("resources/statusImages/defenseStats.png");
+    Texture2D defenseStatsIcon = LoadTexture("resources/miscellaneousImages/stats/defenseStats.png");
+    Texture2D skullIcon = LoadTexture("resources/miscellaneousImages/skull.png");
+    propSprites.bush = LoadTexture("resources/miscellaneousImages/props/bush.png");
+    propSprites.rock = LoadTexture("resources/miscellaneousImages/props/rock.png");
+    propSprites.tree1 = LoadTexture("resources/miscellaneousImages/props/tree1.png");
+    propSprites.tree2 = LoadTexture("resources/miscellaneousImages/props/tree2.png");
+    effectsSprites.coin = LoadTexture("resources/sprites/effects/coin_shine.png");
+    effectsSprites.axe = LoadTexture("resources/miscellaneousImages/axeItem.png");
+
+    // Entrega as texturas ao worldGeneration. Precisa vir antes de gerar o
+    // mundo: o tamanho de cada prop sai da proporcao do sprite.
+    setPropSprites(propSprites);
     Image playerImage = LoadImage("resources/sprites/player/kitsune/Run.png");
     ImageColorReplace(&playerImage, WHITE, BLANK);
     UnloadImage(playerImage);
@@ -526,7 +847,34 @@ int main() {
     int enemyCurrentFrame = 0;
     float enemyFrameTimer = 0.0f;
 
-    const float attackDistance = 15.0f;
+    const float attackDistance = 28.0f;
+    const float enemyAttackIdleTime = 0.20f;
+    const float enemyDeathHoldTime = 5.0f;  // tempo caido no ultimo frame antes de sumir
+    const float playerDeathFrameDuration = 0.15f; // morte do player: mais lenta que os 0,1s do resto
+    const float gameOverDelay = 2.0f;             // tempo travado no ultimo frame antes do menu
+    const float slowMotionStart = 0.35f;          // velocidade do mundo no instante da morte
+    const float slowMotionDuration = 2.0f;        // tempo ate o mundo congelar de vez
+    const float gameOverFadeDuration = 0.5f;      // duracao do escurecimento da tela
+    // ---- ouro ----
+    const float goldBaseDropChance = 0.40f;       // 40% dos inimigos dropam
+    const int goldBaseMinValue = 1;               // quantidade minima dropada
+    const int goldBaseMaxValue = 3;               // quantidade maxima dropada
+    const float goldDropChancePerLevel = 0.10f;   // skill futura: +10 pontos percentuais por nivel
+    const int goldValuePerLevel = 1;              // skill futura: +1 no minimo e no maximo
+    const float goldMagnetRadius = 90.0f;         // distancia em que o ouro comeca a ser puxado
+    const float goldPickupRadius = 16.0f;         // distancia em que o ouro e coletado
+    const float goldPullSpeedStart = 60.0f;       // px/s no inicio da atracao
+    const float goldPullAcceleration = 900.0f;    // px/s^2 enquanto esta sendo puxado
+    const float goldSize = 20.0f;                 // PLACEHOLDER: lado do quadrado amarelo
+    const float axePickupRadius = 32.0f;
+    const float axeAttackRange = 78.0f;
+    const float axeAttackCooldown = 0.45f;
+    const float axeSwingDuration = 0.18f;
+    const float axeAttackAngle = 75.0f;           // alcance lateral de +/- 75 graus
+    const int axeAttackDamage = 30;
+    float gameOverFadeTimer = 0.0f;
+    const Rectangle gameOverWindow = { 440.0f, 230.0f, 400.0f, 260.0f };
+    const Rectangle gameOverMenuButton = { 490.0f, 390.0f, 300.0f, 55.0f };
     const Rectangle startButton = {
         GAME.screen.Center.x - 120.0f,
         GAME.screen.Center.y - 30.0f,
@@ -539,6 +887,16 @@ int main() {
         240.0f,
         60.0f
     };
+    const Rectangle statusTreeBackButton = { 20.0f, 20.0f, 140.0f, 45.0f };
+    const Rectangle menuSettingsButton = {
+        GAME.screen.Center.x - 120.0f,
+        GAME.screen.Center.y + 130.0f,
+        240.0f,
+        60.0f
+    };
+    // De onde a tela de configuracoes foi aberta: e para ca que o VOLTAR e o ESC
+    // devolvem o jogador. Evita precisar de um estado separado so para o menu.
+    GameState settingsReturnState = PAUSED;
     const Vector2 statusTreeCenter = { 700.0f, 430.0f };
     const Vector2 attackNodes[] = {
         { 650.0f, 310.0f }, { 570.0f, 240.0f }, { 480.0f, 170.0f }
@@ -552,8 +910,28 @@ int main() {
     const Vector2 weaponsNodes[] = {
         { 760.0f, 300.0f }, { 830.0f, 230.0f }, { 920.0f, 170.0f }
     };
+    // Ramo do ouro: sobe reto pelo meio, entre o de ataque e o de armas.
+    // No 1 = chance de dropar, no 2 = quantidade, no 3 = os dois.
+    const Vector2 goldNodes[] = {
+        { 700.0f, 270.0f }, { 700.0f, 180.0f }, { 700.0f, 90.0f }
+    };
     const float statusNodeRadius = 12.0f;
     const int statusUpgradeCosts[] = { 10, 20, 30 };
+    const int goldUpgradeCosts[] = { 5, 15, 25 };   // mais baratos que os outros ramos
+
+    // Ganho de cada nivel. Estao nomeados porque as descricoes do tooltip leem
+    // daqui: mudando o balanceamento, o texto muda junto sozinho.
+    const int attackPowerPerLevel = 5;
+    const int defensePerLevel = 5;
+    const int speedPerLevel = 1;
+
+    const SkillValues skillValues = {
+        .attackPerLevel = attackPowerPerLevel,
+        .defensePerLevel = defensePerLevel,
+        .speedPerLevel = speedPerLevel,
+        .goldChancePerLevel = (int)(goldDropChancePerLevel * 100.0f),
+        .goldAmountPerLevel = goldValuePerLevel
+    };
     const float skillTreeZoom = 1.6f;
     Vector2 skillTreePan = { 0.0f, 0.0f };
     Vector2 skillTreeDragStart = { 0.0f, 0.0f };
@@ -581,14 +959,145 @@ int main() {
     };
     const Rectangle pauseWindow = { 440.0f, 150.0f, 400.0f, 420.0f };
     const Rectangle resumeButton = { 490.0f, 260.0f, 300.0f, 55.0f };
-    const Rectangle menuButton = { 490.0f, 330.0f, 300.0f, 55.0f };
-    const Rectangle settingsButton = { 490.0f, 400.0f, 300.0f, 55.0f };
+    const Rectangle restartButton = { 490.0f, 330.0f, 300.0f, 55.0f };
+    const Rectangle menuButton = { 490.0f, 400.0f, 300.0f, 55.0f };
+    const Rectangle settingsButton = { 490.0f, 470.0f, 300.0f, 55.0f };
     const Rectangle settingsBackButton = { 490.0f, 500.0f, 300.0f, 55.0f };
     const Rectangle musicSlider = { 500.0f, 330.0f, 280.0f, 8.0f };
     const Rectangle musicSliderHitArea = { 475.0f, 300.0f, 330.0f, 70.0f };
 
     player.body.collider.size =     { 32.0f, 64.0f };
     player.body.collider.offset =   { 0.0f, 24.0f };
+
+    // Fila de desenho ordenada por Y, remontada todo frame. Declarada aqui fora
+    // para reaproveitar a memoria em vez de alocar 60 vezes por segundo.
+    vector<DrawItem> drawOrder;
+
+    // O desenho do inimigo e o do player viraram lambdas porque a ordenacao por
+    // Y precisa chamar os dois intercalados com os props, em ordem variavel.
+    auto drawEnemySprite = [&](int index) {
+        Enemy& enemy = GAME.enemies[index];
+        EnemySprites& sprites = getEnemySprites(enemy.type);
+        Texture2D enemyTexture = sprites.walk;
+        int currentFrame = enemyCurrentFrame % sprites.walkFrames;
+
+        if (enemy.enemyState == EnemyState::DYING) {
+            enemyTexture = sprites.dead;
+            currentFrame = enemy.deathFrame;
+        } else if (enemy.enemyState == EnemyState::ATTACKING) {
+            enemyTexture = sprites.attack;
+            currentFrame = enemy.attackFrame;
+        } else if (enemy.enemyState == EnemyState::IDLE) {
+            enemyTexture = sprites.idle;
+            currentFrame = enemyCurrentFrame % sprites.idleFrames;
+        }
+
+        Rectangle enemySource = { currentFrame * 128.0f, 0.0f, 128.0f, 128.0f };
+
+        if (enemy.facingLeft)
+            enemySource.width = -enemySource.width;
+
+        const float spriteSize = enemy.type == ZOMBIE ? 96.0f : 128.0f;
+        Rectangle enemyDestination = {
+            enemy.body.position.x - spriteSize / 2.0f,
+            enemy.body.position.y - spriteSize / 2.0f,
+            spriteSize,
+            spriteSize
+        };
+
+        DrawTexturePro(enemyTexture, enemySource, enemyDestination,
+            (Vector2){ 0.0f, 0.0f }, 0.0f,
+            enemy.hitFlashTimer > 0.0f ? RED : WHITE);
+
+        if (GAME.debugModeON && enemy.enemyState != EnemyState::DYING)
+            DrawRectangleLinesEx(getHitbox(enemy.body.position, enemy.body.collider),
+                1.0f, ORANGE);
+    };
+
+    auto drawPlayerSprite = [&]() {
+        Rectangle playerSource = {
+            player.currentFrame * 128.0f,
+            0.0f,
+            128.0f,
+            128.0f
+        };
+
+        if (player.facingLeft)
+            playerSource.width = -playerSource.width;
+
+        const float SPRITE_SIZE = 96.0f;
+        Vector2 off = getPlayerSprites().offset;
+        float dir = player.facingLeft ? -1.0f : 1.0f;
+
+        Rectangle playerDestination = {
+            player.body.position.x + off.x * dir,
+            player.body.position.y + off.y,
+            SPRITE_SIZE,
+            SPRITE_SIZE
+        };
+
+        DrawTexturePro(
+            getPlayerTexture(),
+            playerSource,
+            playerDestination,
+            (Vector2){ SPRITE_SIZE / 2.0f, SPRITE_SIZE / 2.0f },
+            0.0f,
+            WHITE
+        );
+
+        if (GAME.debugModeON) {
+            DrawRectangleLinesEx(getHitbox(player.body.position, player.body.collider), 2.0f, ORANGE);
+            DrawLine(player.body.position.x, player.body.position.y - 60,
+                    player.body.position.x, player.body.position.y + 60, GREEN);
+        }
+    };
+
+    auto startGame = [&]() {
+        unsigned int seed = (unsigned int)time(nullptr);
+        SetRandomSeed(seed);
+        gen.seed(seed);
+        GAME.seed = seed;
+        printSeedDebug(GAME.seed);
+
+        GAME.projectiles.clear();
+        GAME.goldDrops.clear();
+        GAME.axeDrops.clear();
+        GAME.axeOwned = false;
+        GAME.axeDropped = false;
+        GAME.axeCooldownTimer = 0.0f;
+        GAME.axeSwingTimer = 0.0f;
+        GAME.axeSwingDirection = { 1.0f, 0.0f };
+        GAME.runGold = 0;
+        GAME.normalZombiesKilled = 0;
+        GAME.bossesSpawned = 0;
+
+        player.healthPoints = player.maxHealthPoints;
+        player.body.speed = (float)player.speed;
+        player.body.position = GAME.world.Center;
+        player.facingLeft = false;
+        player.deathTimer = 0.0f;
+        player.deathHoldTimer = 0.0f;
+        setPlayerAnimation(PLAYER_IDLE);
+        player.currentFrame = 0;
+        player.frameTimer = 0.0f;
+        GAME.worldTimeScale = 1.0f;
+        gameOverFadeTimer = 0.0f;
+
+        WorldGenConfig worldConfig;
+        worldConfig.tileSize         = GAME.TILE;
+        worldConfig.mapWidthInTiles  = GAME.MAP_W;
+        worldConfig.mapHeightInTiles = GAME.MAP_H;
+        worldConfig.playerSpawn      = GAME.world.Center;
+
+        generateWorld(worldProps, tiles, worldConfig, seed);
+
+        GAME.enemies.clear();
+        createEnemies(GAME.enemies, enemiesAmount);
+
+        StopMusicStream(menuMusic);
+        PlayMusicStream(gameMusic);
+        GAME.gameState = PLAYING;
+    };
 
     //--------------------------------------------------------------------------------------
 
@@ -599,35 +1108,34 @@ int main() {
         //----------------------------------------------------------------------------------
         // Update your variables here
 
-        if (GAME.gameState == MENU) {
+        // Estado em que o frame COMECOU. Toda checagem de clique abaixo usa isto,
+        // e nao o GAME.gameState atual.
+        //
+        // Sem isso, um clique que troca de tela e lido de novo pela tela nova no
+        // mesmo frame: o botao CONFIGURACOES do menu (y 490-550) fica em cima do
+        // botao VOLTAR da tela de configuracoes (y 500-555), entao o mesmo clique
+        // abria a tela e ja saia dela, salvando o settings.txt no caminho.
+        const GameState frameState = GAME.gameState;
+
+        if (frameState == MENU) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
                  CheckCollisionPointRec(GetMousePosition(), startButton)) {
-                // Geração da seed e do mapa somente ao iniciar uma partida.
-                unsigned int seed = (unsigned int)time(nullptr); // a seed gerada é de acordo com o horário da execução no sistema
-                SetRandomSeed(seed);
-                GAME.seed = seed; // Guarda a seed na struct do jogo, e a variável local é jogada fora
-                printSeedDebug(GAME.seed);
-
-                createEnemies(GAME.enemies, enemiesAmount);
-
-                for (int i = 0; i < tiles.size(); i++) {
-                    int percentage = GetRandomValue(1, 100);
-                    if (percentage <= 15)
-                        tiles[i] = WALL;
-                }
-
-                StopMusicStream(menuMusic);
-                PlayMusicStream(gameMusic);
-                GAME.gameState = PLAYING;
+                startGame();
             }
 
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
                 CheckCollisionPointRec(GetMousePosition(), statusTreeButton)) {
                 GAME.gameState = STATUS_TREE;
             }
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+                CheckCollisionPointRec(GetMousePosition(), menuSettingsButton)) {
+                settingsReturnState = MENU;
+                GAME.gameState = SETTINGS;
+            }
         }
 
-        if (GAME.gameState == STATUS_TREE) {
+        if (frameState == STATUS_TREE) {
             Vector2 keyboardPan = { 0.0f, 0.0f };
             if (IsKeyDown(KEY_A))
                 keyboardPan.x += 1.0f;
@@ -643,7 +1151,12 @@ int main() {
             );
             clampSkillTreePan();
 
-            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+                CheckCollisionPointRec(GetMousePosition(), statusTreeBackButton)) {
+                GAME.gameState = MENU;
+                skillTreeDragging = false;
+                skillTreeDidDrag = false;
+            } else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 skillTreeDragging = true;
                 skillTreeDidDrag = false;
                 skillTreeDragStart = GetMousePosition();
@@ -668,13 +1181,14 @@ int main() {
                         Vector2 attackNode = skillTreeToScreen(attackNodes[i]);
                         Vector2 defenseNode = skillTreeToScreen(defenseNodes[i]);
                         Vector2 movementNode = skillTreeToScreen(movementNodes[i]);
+                        Vector2 goldNode = skillTreeToScreen(goldNodes[i]);
                         float nodeRadius = statusNodeRadius * skillTreeZoom;
 
                         if (i == player.attackLevel &&
                             CheckCollisionPointCircle(mousePosition, attackNode, nodeRadius) &&
                             GAME.gold >= statusUpgradeCosts[i]) {
                             GAME.gold -= statusUpgradeCosts[i];
-                            player.attackPower += 5;
+                            player.attackPower += attackPowerPerLevel;
                             player.attackLevel++;
                         }
 
@@ -682,7 +1196,7 @@ int main() {
                             CheckCollisionPointCircle(mousePosition, defenseNode, nodeRadius) &&
                             GAME.gold >= statusUpgradeCosts[i]) {
                             GAME.gold -= statusUpgradeCosts[i];
-                            player.defense += 5;
+                            player.defense += defensePerLevel;
                             player.defenseLevel++;
                         }
 
@@ -690,8 +1204,20 @@ int main() {
                             CheckCollisionPointCircle(mousePosition, movementNode, nodeRadius) &&
                             GAME.gold >= statusUpgradeCosts[i]) {
                             GAME.gold -= statusUpgradeCosts[i];
-                            player.speed += 1;
+                            player.speed += speedPerLevel;
+                            player.body.speed = (float)player.speed;  // e o corpo que anda
                             player.movementLevel++;
+                        }
+
+                        if (i == player.goldLevel &&
+                            CheckCollisionPointCircle(mousePosition, goldNode, nodeRadius) &&
+                            GAME.gold >= goldUpgradeCosts[i]) {
+                            GAME.gold -= goldUpgradeCosts[i];
+
+                            if (i == 0 || i == 2) player.goldDropLevel++;    // chance
+                            if (i == 1 || i == 2) player.goldAmountLevel++;  // quantidade
+
+                            player.goldLevel++;
                         }
                     }
                 }
@@ -699,35 +1225,38 @@ int main() {
             }
         }
         if (IsKeyPressed(KEY_F1)) GAME.debugModeON = (GAME.debugModeON + 1) % 2;
-        if (IsKeyPressed(KEY_F2)) player.skin = (PlayerSkin)((player.skin + 1) % 3);
+        // a skin nao muda depois que o player morre: a animacao de morte tem que
+        // terminar na mesma skin em que a run foi jogada
+        if (IsKeyPressed(KEY_F2) &&
+            GAME.gameState != PLAYER_DYING && GAME.gameState != GAME_OVER)
+            player.skin = (PlayerSkin)((player.skin + 1) % 3);
 
-        if (player.frameTimer >= frameDuration) {
-            player.frameTimer = 0.0f;
-            player.currentFrame = (player.currentFrame + 1) % getPlayerFrameCount();
-        }
-
-        if (GAME.gameState == PAUSED &&
+        if (frameState == PAUSED &&
             IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             Vector2 mousePosition = GetMousePosition();
 
             if (CheckCollisionPointRec(mousePosition, resumeButton)) {
                 GAME.gameState = PLAYING;
+            } else if (CheckCollisionPointRec(mousePosition, restartButton)) {
+                startGame();
             } else if (CheckCollisionPointRec(mousePosition, menuButton)) {
                 StopMusicStream(gameMusic);
                 PlayMusicStream(menuMusic);
                 GAME.gameState = MENU;
             } else if (CheckCollisionPointRec(mousePosition, settingsButton)) {
+                settingsReturnState = PAUSED;
                 GAME.gameState = SETTINGS;
             }
         }
 
-        if (GAME.gameState == SETTINGS &&
+        if (frameState == SETTINGS &&
             IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
             CheckCollisionPointRec(GetMousePosition(), settingsBackButton)) {
-            GAME.gameState = PAUSED;
+            saveMusicVolume(musicVolume);
+            GAME.gameState = settingsReturnState;
         }
 
-        if (GAME.gameState == SETTINGS &&
+        if (frameState == SETTINGS &&
             IsMouseButtonDown(MOUSE_BUTTON_LEFT) &&
             CheckCollisionPointRec(GetMousePosition(), musicSliderHitArea)) {
             float sliderPosition = Clamp(
@@ -740,7 +1269,12 @@ int main() {
             SetMusicVolume(gameMusic, musicVolume / 100.0f);
         }
 
-        if (GAME.gameState == MENU || GAME.gameState == STATUS_TREE)
+        // Nas configuracoes, quem manda e a tela de tras: aberta pelo menu, quem
+        // precisa continuar sendo alimentada e a musica do menu.
+        bool onMenuMusic = GAME.gameState == MENU || GAME.gameState == STATUS_TREE ||
+            (GAME.gameState == SETTINGS && settingsReturnState == MENU);
+
+        if (onMenuMusic)
             UpdateMusicStream(menuMusic);
         else
             UpdateMusicStream(gameMusic);
@@ -780,20 +1314,20 @@ int main() {
                 setPlayerAnimation(PLAYER_IDLE);
             }
 
-            player.body.position.x += movement.x * player.body.speed;
-            player.body.position.y += movement.y * player.body.speed;
+            Vector2 playerDelta = {
+                movement.x * player.body.speed,
+                movement.y * player.body.speed
+            };
+            player.body.position = moveWithCollision(
+                player.body.position, playerDelta, player.body.collider);
 
             player.body.position.x = Clamp(player.body.position.x, 0.0f, (float)GAME.world.Width);
             player.body.position.y = Clamp(player.body.position.y, 0.0f, (float)GAME.world.Height);
         }
 
-        if (IsKeyPressed(KEY_TAB)) {
-            if (GAME.gameState == GameState::PLAYING) GAME.gameState = GameState::INVENTORY;
-            else if (GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::PLAYING;      
-        }
         if (IsKeyPressed(KEY_M))
-            if (GAME.gameState == GameState::PLAYING || GAME.gameState == GameState::INVENTORY) GAME.gameState = GameState::MAP;
-            else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;   
+            if (GAME.gameState == GameState::PLAYING) GAME.gameState = GameState::MAP;
+            else if (GAME.gameState == MAP) GAME.gameState = GameState::PLAYING;
         if (IsKeyPressed(KEY_ESCAPE)) {
             if (GAME.gameState == STATUS_TREE)
                 GAME.gameState = MENU;
@@ -801,8 +1335,10 @@ int main() {
                 GAME.gameState = PAUSED;
             else if (GAME.gameState == PAUSED)
                 GAME.gameState = PLAYING;
-            else if (GAME.gameState == SETTINGS)
-                GAME.gameState = PAUSED;
+            else if (GAME.gameState == SETTINGS) {
+                saveMusicVolume(musicVolume);
+                GAME.gameState = settingsReturnState;
+            }
         }
 
         camera.target = player.body.position;
@@ -822,43 +1358,159 @@ int main() {
             visibleWorldBottomRight.y - visibleWorldTopLeft.y
         };
 
-        if (GAME.gameState == PLAYING) {
-            for (int i = 0; i < enemiesAmount; i++) {
+        if (GAME.gameState == PLAYING || GAME.gameState == PLAYER_DYING) {
+            for (int i = 0; i < (int)GAME.enemies.size(); i++) {
                 Enemy& enemy = GAME.enemies[i];
+                EnemySprites& enemySprites = getEnemySprites(enemy.type);
 
-                if (enemy.enemyState == EnemyState::ATTACKING) {
-                    enemy.attackFrameTimer += GetFrameTime();
+                switch (enemy.enemyState) {
+                    case EnemyState::DYING: {
+                        // Toca a animacao de morte UMA vez e trava no ultimo frame;
+                        // dali em diante so conta o tempo caido no chao.
+                        if (enemy.deathFrame < enemySprites.deadFrames - 1) {
+                            enemy.deathFrameTimer += getWorldDeltaTime();
 
-                    if (enemy.attackFrameTimer >= frameDuration) {
-                        enemy.attackFrameTimer = 0.0f;
-                        enemy.attackFrame++;
-
-                        if (enemy.attackFrame >= 4) {
-                            enemy.attackFrame = 0;
-                            enemy.enemyState = EnemyState::IDLE;
-                            enemy.idleTimer = 0.5f;
+                            if (enemy.deathFrameTimer >= frameDuration) {
+                                enemy.deathFrameTimer = 0.0f;
+                                enemy.deathFrame++;
+                            }
+                        } else {
+                            enemy.deathHoldTimer += getWorldDeltaTime();
                         }
+                        break;
                     }
-                } else if (enemy.enemyState == EnemyState::IDLE) {
-                    enemy.idleTimer -= GetFrameTime();
 
-                    if (enemy.idleTimer <= 0.0f)
-                        enemy.enemyState = EnemyState::SEARCHING;
-                } else {
-                    float distance = Vector2Distance(enemy.body.position, player.body.position);
+                    case EnemyState::ATTACKING: {
+                        enemy.attackFrameTimer += getWorldDeltaTime();
 
-                    if (distance <= attackDistance) {
-                        enemy.enemyState = EnemyState::ATTACKING;
-                        enemy.attackFrame = 0;
-                        enemy.attackFrameTimer = 0.0f;
-                    } else if (CheckCollisionPointRec(enemy.body.position, visibleWorld)) {
-                        enemy.enemyState = EnemyState::SEARCHING;
-                    } else {
-                        enemy.enemyState = EnemyState::ROAMING;
+                        if (enemy.attackFrameTimer >= frameDuration) {
+                            enemy.attackFrameTimer = 0.0f;
+
+                            if (enemy.attackFrame == 2 && GAME.gameState == PLAYING) {
+                                float distance = Vector2DistanceSqr(enemy.body.position, player.body.position);
+                                if (distance <= attackDistance * attackDistance) {
+                                    // A defesa corta uma PORCENTAGEM do dano, truncando para
+                                    // baixo (assim o upgrade nunca arredonda o dano pra cima)
+                                    // e nunca deixando o golpe valer menos que 1.
+                                    int damage = (int)(enemy.powerPoints *
+                                        (1.0f - player.defense / 100.0f));
+                                    if (damage < 1)
+                                        damage = 1;
+
+                                    player.healthPoints -= damage;
+                                }
+                            }
+
+                            enemy.attackFrame++;
+
+                            
+                            if (enemy.attackFrame >= enemySprites.attackFrames) {
+                                enemy.attackFrame = 0;
+                                const bool boss =
+                                    enemy.type == MINOTAUR_1 ||
+                                    enemy.type == MINOTAUR_2 ||
+                                    enemy.type == MINOTAUR_3;
+                                enemy.enemyState = boss
+                                    ? EnemyState::SEARCHING
+                                    : EnemyState::IDLE;
+                                enemy.idleTimer = boss ? 0.0f : enemyAttackIdleTime;
+                            }
+                        }
+                        break;
+                    }
+
+                    case EnemyState::IDLE: {
+                        enemy.idleTimer -= getWorldDeltaTime();
+
+                        if (enemy.idleTimer <= 0.0f)
+                            enemy.enemyState = EnemyState::SEARCHING;
+                        break;
+                    }
+
+                    case EnemyState::ROAMING:
+                    case EnemyState::SEARCHING: {
+                        // distância do inimigo até o player (é melhor calcular com "Vector2DistanceSqr" pq não usa de raiz quadrada - e raiz quadrada pesa bastante)
+                        // porém daí a distância é calculada ao quadrado
+                        float distance = Vector2DistanceSqr(enemy.body.position, player.body.position);
+
+                        // e portanto é importante lembrar de calcular o quadrado da distância que se deseja comparar:
+                        if (distance <= attackDistance * attackDistance) {
+                            enemy.enemyState = EnemyState::ATTACKING;
+                            enemy.attackFrame = 0;
+                            enemy.attackFrameTimer = 0.0f;
+                        } else if (CheckCollisionPointRec(enemy.body.position, visibleWorld)) {
+                            enemy.enemyState = EnemyState::SEARCHING;
+                        } else {
+                            enemy.enemyState = EnemyState::ROAMING;
+                        }
+                        break;
                     }
                 }
 
-                enemyMovement(GAME.enemies, i, enemiesAmount);
+                enemyMovement(GAME.enemies, i);
+            }
+            
+            for (int i = (int)GAME.goldDrops.size() - 1; i >= 0; i--) {
+                GoldDrop& gold = GAME.goldDrops[i];
+
+                gold.frameTimer += getWorldDeltaTime();
+                if (gold.frameTimer >= frameDuration * 2) {
+                    gold.frameTimer = 0.0f;
+                    gold.currentFrame++;
+
+                    if (gold.currentFrame >= 6) gold.currentFrame = 0;
+                }
+            }
+        }
+
+        // ---------------- MORTE DO PLAYER E GAME OVER ----------------
+        // Dispara no frame em que a vida zera: tira o controle do player, comeca
+        // a animacao de morte e liga a camera lenta.
+        if (GAME.gameState == PLAYING && player.healthPoints <= 0) {
+            player.healthPoints = 0;           // evita vida negativa no HUD
+            GAME.gameState = PLAYER_DYING;
+            setPlayerAnimation(PLAYER_DEAD);   // zera currentFrame e frameTimer
+            player.deathTimer = 0.0f;
+            player.deathHoldTimer = 0.0f;
+            gameOverFadeTimer = 0.0f;
+        }
+
+        if (GAME.gameState == PLAYER_DYING) {
+            // A animacao do player roda em TEMPO REAL: se entrasse na camera lenta
+            // ela congelaria no meio junto com o mundo.
+            const float realDeltaTime = GetFrameTime();
+
+            // mundo desacelerando de slowMotionStart ate parar de vez
+            player.deathTimer += realDeltaTime;
+            GAME.worldTimeScale = slowMotionStart *
+                (1.0f - Clamp(player.deathTimer / slowMotionDuration, 0.0f, 1.0f));
+
+            if (player.currentFrame < getPlayerFrameCount() - 1) {
+                player.frameTimer += realDeltaTime;
+
+                if (player.frameTimer >= playerDeathFrameDuration) {
+                    player.frameTimer = 0.0f;
+                    player.currentFrame++;
+                }
+            } else {
+                // travado no ultimo frame: conta o tempo de leitura antes do menu
+                player.deathHoldTimer += realDeltaTime;
+
+                if (player.deathHoldTimer >= gameOverDelay)
+                    GAME.gameState = GAME_OVER;
+            }
+        }
+
+        if (GAME.gameState == GAME_OVER) {
+            GAME.worldTimeScale = 0.0f;        // mundo parado por baixo do menu
+            gameOverFadeTimer += GetFrameTime();
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+                CheckCollisionPointRec(GetMousePosition(), gameOverMenuButton)) {
+                StopMusicStream(gameMusic);
+                PlayMusicStream(menuMusic);
+                GAME.worldTimeScale = 1.0f;
+                GAME.gameState = MENU;
             }
         }
 
@@ -867,36 +1519,230 @@ int main() {
 
         camera.target = (Vector2){player.body.position.x, player.body.position.y};
 
-        if (GAME.gameState == PLAYING) {
-            if (IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                Vector2 direction = Vector2Normalize(Vector2Subtract(mouseWorld, player.body.position));
+        if (GAME.gameState == PLAYING || GAME.gameState == PLAYER_DYING) {
+            GAME.axeCooldownTimer =
+                fmaxf(0.0f, GAME.axeCooldownTimer - getWorldDeltaTime());
+            GAME.axeSwingTimer =
+                fmaxf(0.0f, GAME.axeSwingTimer - getWorldDeltaTime());
 
-                Projectile p;
-                p.body.position = player.body.position;
-                p.body.speed    = 10.0f;
-                p.direction     = direction;
-                p.damage        = 10;
-                p.body.collider.offset = { 0, 0 };
-                p.body.collider.size = { 10, 8 };
-                GAME.projectiles.push_back(p);
+            // atirar so enquanto vivo; as balas ja no ar seguem na camera lenta
+            if (GAME.gameState == PLAYING &&
+                IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 shotDirection =
+                    Vector2Subtract(mouseWorld, player.body.position);
+                float shotLength = Vector2Length(shotDirection);
+
+                if (shotLength > 0.0f) {
+                    shotDirection = Vector2Scale(shotDirection, 1.0f / shotLength);
+
+                    Projectile p;
+                    p.body.position = Vector2Add(player.body.position, player.projectileOffset);
+                    p.body.speed    = 10.0f;
+                    p.direction     = shotDirection;
+                    p.damage        = player.attackPower;   // upgrade de ataque entra aqui
+                    p.body.collider.offset = { 0, 0 };
+                    p.body.collider.size = { 10, 8 };
+                    GAME.projectiles.push_back(p);
+                }
+            }
+
+            // Botao direito usa o machado sem substituir a arma a distancia.
+            if (GAME.gameState == PLAYING && GAME.axeOwned &&
+                IsCursorOnScreen() && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) &&
+                GAME.axeCooldownTimer <= 0.0f) {
+                Vector2 attackDirection =
+                    Vector2Subtract(mouseWorld, player.body.position);
+                float attackLength = Vector2Length(attackDirection);
+
+                if (attackLength > 0.0f) {
+                    attackDirection = Vector2Scale(attackDirection, 1.0f / attackLength);
+                    GAME.axeSwingDirection = attackDirection;
+                    float attackCos = cosf(axeAttackAngle * DEG2RAD);
+                    GAME.axeCooldownTimer = axeAttackCooldown;
+                    GAME.axeSwingTimer = axeSwingDuration;
+
+                    for (int i = (int)GAME.enemies.size() - 1; i >= 0; i--) {
+                        Enemy& enemy = GAME.enemies[i];
+
+                        if (enemy.enemyState == EnemyState::DYING)
+                            continue;
+
+                        Vector2 toEnemy =
+                            Vector2Subtract(enemy.body.position, player.body.position);
+                        float distance = Vector2Length(toEnemy);
+
+                        if (distance > 0.0f && distance <= axeAttackRange) {
+                            Vector2 enemyDirection =
+                                Vector2Scale(toEnemy, 1.0f / distance);
+                            float directionDot =
+                                Vector2DotProduct(attackDirection, enemyDirection);
+
+                            if (directionDot >= attackCos) {
+                                enemy.healthPoints -= axeAttackDamage;
+                                enemy.hitFlashTimer = 0.12f;
+                            }
+                        }
+                    }
+                }
             }
 
             for (int i = (int)GAME.projectiles.size() - 1; i >= 0; i--) {
                 Projectile& bullet = GAME.projectiles[i];
-                
-                bullet.screenTime += GetFrameTime();
-                if (bullet.screenTime > 5.0f) {
+
+                bullet.screenTime += getWorldDeltaTime();
+
+                // Colisão das balas com os inimigos
+                for (int j = (int)GAME.enemies.size() - 1; j >= 0; j--) {
+                    Enemy& enemy = GAME.enemies[j];
+
+                    // quem esta morrendo perdeu a hitbox: a bala passa direto
+                    // (zerar o collider nao basta - CheckCollisionRecs ainda
+                    //  acusa colisao para um retangulo degenerado por dentro de outro)
+                    if (enemy.enemyState == EnemyState::DYING)
+                        continue;
+
+                    if (CheckCollisionRecs(
+                        getHitbox(bullet.body.position, bullet.body.collider),
+                        getHitbox(enemy.body.position, enemy.body.collider))) {
+                            bullet.life--;
+                            enemy.healthPoints -= bullet.damage;
+                        }
+
+                    if (bullet.life <= 0) break;
+                }
+
+                if (bullet.screenTime > 5.0f || bullet.life <= 0) {
                     GAME.projectiles.erase(GAME.projectiles.begin() + i);
                     continue;
                 }
 
-                bullet.body.position = Vector2Add(bullet.body.position, Vector2Scale(bullet.direction, bullet.body.speed));
+                bullet.body.position = Vector2Add(bullet.body.position,
+                    Vector2Scale(bullet.direction, bullet.body.speed * GAME.worldTimeScale));
             }
 
-            enemyFrameTimer += GetFrameTime();
+            int normalZombiesKilledThisFrame = 0;
+
+            // Inimigo sem vida entra em DYING (perde a hitbox e para de agir);
+            // so sai do vetor depois da animacao + o tempo caido no chao.
+            for (int i = (int)GAME.enemies.size() - 1; i >= 0; i--) {
+                Enemy& enemy = GAME.enemies[i];
+
+                enemy.hitFlashTimer =
+                    fmaxf(0.0f, enemy.hitFlashTimer - getWorldDeltaTime());
+
+                if (enemy.healthPoints <= 0 && enemy.enemyState != EnemyState::DYING) {
+                    enemy.enemyState = EnemyState::DYING;
+                    enemy.deathFrame = 0;
+                    enemy.deathFrameTimer = 0.0f;
+                    enemy.deathHoldTimer = 0.0f;
+                    enemy.body.collider.size = { 0.0f, 0.0f };   // sem hitbox a partir daqui
+
+                    if (enemy.type == ZOMBIE)
+                        normalZombiesKilledThisFrame++;
+                    else if (!GAME.axeDropped) {
+                        AxeDrop axe;
+                        axe.position = Vector2Add(enemy.body.position, (Vector2){ 0.0f, 25.0f });
+                        GAME.axeDrops.push_back(axe);
+                        GAME.axeDropped = true;
+                    }
+
+                    // Sorteio do drop de ouro. Os dois niveis entram aqui: um na
+                    // chance, outro na quantidade (ambos em 0 ate o ramo existir).
+                    uniform_real_distribution<float> ranChance(0.0f, 1.0f);
+                    float dropChance = goldBaseDropChance +
+                        player.goldDropLevel * goldDropChancePerLevel;
+
+                    if (ranChance(gen) < dropChance) {
+                        uniform_int_distribution<int> ranValue(
+                            goldBaseMinValue + player.goldAmountLevel * goldValuePerLevel,
+                            goldBaseMaxValue + player.goldAmountLevel * goldValuePerLevel);
+
+                        GoldDrop drop;
+                        // cai nos pes do inimigo, nao no centro do sprite
+                        drop.position = Vector2Add(enemy.body.position, (Vector2){ 0.0f, 25.0f });
+                        drop.value = ranValue(gen);
+                        GAME.goldDrops.push_back(drop);
+                    }
+                }
+
+                if (enemy.enemyState == EnemyState::DYING &&
+                    enemy.deathHoldTimer >= enemyDeathHoldTime) {
+                    GAME.enemies.erase(GAME.enemies.begin() + i);
+                }
+            }
+
+            for (int i = 0; i < normalZombiesKilledThisFrame; i++) {
+                GAME.normalZombiesKilled++;
+
+                if (GAME.bossesSpawned < 3 &&
+                    GAME.normalZombiesKilled == (GAME.bossesSpawned + 1) * 100) {
+                    EnemyType bossType = (EnemyType)(MINOTAUR_1 + GAME.bossesSpawned);
+                    spawnEnemy(GAME.enemies, bossType);
+                    GAME.bossesSpawned++;
+                } else {
+                    for(int i = 0; i < 3; i++){
+                        spawnEnemy(GAME.enemies, ZOMBIE);
+                    }
+                }
+            }
+
+            // ---------------- OURO NO CHAO ----------------
+            // Fora do raio do ima o ouro so fica parado (sem timer: some quando o
+            // player pegar). Dentro do raio ele e puxado acelerando ate encostar.
+            if (GAME.gameState == PLAYING) {
+                Vector2 playerCenter = Vector2Add(player.body.position, player.body.collider.offset);
+
+                for (int i = (int)GAME.goldDrops.size() - 1; i >= 0; i--) {
+                    GoldDrop& drop = GAME.goldDrops[i];
+
+                    drop.bobTimer += getWorldDeltaTime();
+
+                    float distance = Vector2Distance(drop.position, playerCenter);
+                    bool collected = distance <= goldPickupRadius;
+
+                    if (!collected && distance <= goldMagnetRadius) {
+                        if (drop.pullSpeed < goldPullSpeedStart)
+                            drop.pullSpeed = goldPullSpeedStart;
+
+                        drop.pullSpeed += goldPullAcceleration * getWorldDeltaTime();
+
+                        float step = drop.pullSpeed * getWorldDeltaTime();
+
+                        if (step >= distance) {
+                            // o passo passaria do player: coleta em vez de atravessar
+                            // (protege contra o ouro furar o raio de coleta com FPS baixo)
+                            collected = true;
+                        } else {
+                            Vector2 toPlayer = Vector2Normalize(
+                                Vector2Subtract(playerCenter, drop.position));
+                            drop.position = Vector2Add(drop.position, Vector2Scale(toPlayer, step));
+                        }
+                    } else if (!collected) {
+                        drop.pullSpeed = 0.0f;   // saiu do alcance: para e volta a esperar
+                    }
+
+                    if (collected) {
+                        GAME.gold += drop.value;
+                        GAME.runGold += drop.value;
+                        GAME.goldDrops.erase(GAME.goldDrops.begin() + i);
+                    }
+                }
+
+                for (int i = (int)GAME.axeDrops.size() - 1; i >= 0; i--) {
+                    AxeDrop& drop = GAME.axeDrops[i];
+                    drop.bobTimer += getWorldDeltaTime();
+
+                    if (Vector2Distance(drop.position, playerCenter) <= axePickupRadius) {
+                        GAME.axeDrops.erase(GAME.axeDrops.begin() + i);
+                        GAME.axeOwned = true;
+                    }
+                }
+            }
+
+            enemyFrameTimer += getWorldDeltaTime();
             if (enemyFrameTimer >= frameDuration) {
                 enemyFrameTimer = 0.0f;
-                enemyCurrentFrame = (enemyCurrentFrame + 1) % 10;
+                enemyCurrentFrame = (enemyCurrentFrame + 1) % 12;
             }
         }
 
@@ -907,7 +1753,12 @@ int main() {
         BeginDrawing();
 
             ClearBackground(BLACK);
-            if (GAME.gameState == MENU) {
+            // O menu tambem e desenhado por tras das configuracoes abertas por ele,
+            // senao o fundo cairia no desenho do mundo (com inimigos de alguma run velha).
+            bool drawingMenu = GAME.gameState == MENU ||
+                (GAME.gameState == SETTINGS && settingsReturnState == MENU);
+
+            if (drawingMenu) {
                 DrawTexturePro(
                     menuBackground,
                     (Rectangle){0, 0, (float)menuBackground.width, (float)menuBackground.height},
@@ -917,9 +1768,14 @@ int main() {
                     WHITE
                 );
                 Vector2 mousePosition = GetMousePosition();
-                bool startButtonHovered = CheckCollisionPointRec(mousePosition, startButton);
+                // com a janela de configuracoes aberta por cima, os botoes do menu
+                // nao respondem mais: nao devem acender com o cursor tambem
+                bool menuButtonsActive = GAME.gameState == MENU;
+                bool startButtonHovered = menuButtonsActive &&
+                    CheckCollisionPointRec(mousePosition, startButton);
 
-                DrawText("ROGUELIKE", GAME.screen.Center.x - 180.0f, 150.0f, 60, WHITE);
+                DrawText("DENUO", GAME.screen.Center.x - 100.0f, 150.0f, 60, WHITE);
+                DrawText("A Roguelike Project", GAME.screen.Center.x - 150.0f, 200.0f, 30, WHITE);
 
                 DrawRectangleRec(
                     startButton,
@@ -934,7 +1790,8 @@ int main() {
                     30,
                     WHITE
                 );
-                bool statusTreeButtonHovered = CheckCollisionPointRec(mousePosition, statusTreeButton);
+                bool statusTreeButtonHovered = menuButtonsActive &&
+                    CheckCollisionPointRec(mousePosition, statusTreeButton);
                 DrawRectangleRec(
                     statusTreeButton,
                     statusTreeButtonHovered ? DARKBLUE : BLUE
@@ -946,6 +1803,22 @@ int main() {
                         MeasureText("ARVORE DE STATUS", 18) / 2.0f,
                     statusTreeButton.y + 21.0f,
                     18,
+                    WHITE
+                );
+
+                bool menuSettingsHovered = menuButtonsActive &&
+                    CheckCollisionPointRec(mousePosition, menuSettingsButton);
+                DrawRectangleRec(
+                    menuSettingsButton,
+                    menuSettingsHovered ? GRAY : DARKGRAY
+                );
+                DrawRectangleLinesEx(menuSettingsButton, 3.0f, WHITE);
+                DrawText(
+                    "CONFIGURACOES",
+                    menuSettingsButton.x + menuSettingsButton.width / 2.0f -
+                        MeasureText("CONFIGURACOES", 20) / 2.0f,
+                    menuSettingsButton.y + 20.0f,
+                    20,
                     WHITE
                 );
             } else if (GAME.gameState == STATUS_TREE) {
@@ -969,6 +1842,7 @@ int main() {
                 DrawLineEx(screenCenter, skillTreeToScreen(defenseNodes[0]), 3.0f, DARKBROWN);
                 DrawLineEx(screenCenter, skillTreeToScreen(movementNodes[0]), 3.0f, DARKBROWN);
                 DrawLineEx(screenCenter, skillTreeToScreen(weaponsNodes[0]), 3.0f, DARKBROWN);
+                DrawLineEx(screenCenter, skillTreeToScreen(goldNodes[0]), 3.0f, DARKBROWN);
                 for (int i = 0; i < 2; i++) {
                     DrawLineEx(skillTreeToScreen(attackNodes[i]), skillTreeToScreen(attackNodes[i + 1]),
                         3.0f, DARKBROWN);
@@ -977,6 +1851,8 @@ int main() {
                     DrawLineEx(skillTreeToScreen(movementNodes[i]), skillTreeToScreen(movementNodes[i + 1]),
                         3.0f, DARKBROWN);
                     DrawLineEx(skillTreeToScreen(weaponsNodes[i]), skillTreeToScreen(weaponsNodes[i + 1]),
+                        3.0f, DARKBROWN);
+                    DrawLineEx(skillTreeToScreen(goldNodes[i]), skillTreeToScreen(goldNodes[i + 1]),
                         3.0f, DARKBROWN);
                 }
 
@@ -999,7 +1875,129 @@ int main() {
                         statusUpgradeCosts[i], 2);
                     drawStatusNode(skillTreeToScreen(weaponsNodes[i]), statusNodeRadius * skillTreeZoom,
                         false, false, statusUpgradeCosts[i], 0);
+                    drawStatusNode(skillTreeToScreen(goldNodes[i]), statusNodeRadius * skillTreeZoom,
+                        i < player.goldLevel,
+                        i == player.goldLevel && GAME.gold >= goldUpgradeCosts[i],
+                        goldUpgradeCosts[i], 3);
                 }
+
+                // ---------------- TOOLTIP DO NO SOB O CURSOR ----------------
+                // Desenhado por ultimo, para ficar por cima dos nos e das linhas.
+                // Some enquanto o jogador esta arrastando a arvore.
+                if (!(skillTreeDragging && skillTreeDidDrag)) {
+                    const Vector2 cursor = GetMousePosition();
+                    const float nodeRadius = statusNodeRadius * skillTreeZoom;
+
+                    const Vector2* branchNodes[] = {
+                        attackNodes, defenseNodes, movementNodes, weaponsNodes, goldNodes
+                    };
+                    const SkillBranch branchIds[] = {
+                        SKILL_ATTACK, SKILL_DEFENSE, SKILL_MOVEMENT, SKILL_WEAPONS, SKILL_GOLD
+                    };
+                    const int* branchCosts[] = {
+                        statusUpgradeCosts, statusUpgradeCosts, statusUpgradeCosts,
+                        statusUpgradeCosts, goldUpgradeCosts
+                    };
+                    // nivel atual de cada ramo; -1 no de armas, que nao e comprável
+                    const int branchLevels[] = {
+                        player.attackLevel, player.defenseLevel, player.movementLevel,
+                        -1, player.goldLevel
+                    };
+                    const int branchCount = 5;
+
+                    int hoveredBranch = -1;
+                    int hoveredNode = -1;
+
+                    for (int b = 0; b < branchCount && hoveredBranch < 0; b++) {
+                        for (int i = 0; i < SKILL_NODES_PER_BRANCH; i++) {
+                            if (CheckCollisionPointCircle(cursor,
+                                    skillTreeToScreen(branchNodes[b][i]), nodeRadius)) {
+                                hoveredBranch = b;
+                                hoveredNode = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (hoveredBranch >= 0) {
+                        SkillBranch branch = branchIds[hoveredBranch];
+                        int branchLevel = branchLevels[hoveredBranch];
+                        int cost = branchCosts[hoveredBranch][hoveredNode];
+
+                        const char* title = getSkillName(branch, hoveredNode);
+                        const char* description =
+                            getSkillDescription(branch, hoveredNode, skillValues);
+
+                        const char* status;
+                        Color statusColor;
+
+                        if (branch == SKILL_WEAPONS) {
+                            status = "EM BREVE";
+                            statusColor = GRAY;
+                        } else if (hoveredNode < branchLevel) {
+                            status = "COMPRADO";
+                            statusColor = GREEN;
+                        } else if (hoveredNode == branchLevel && GAME.gold >= cost) {
+                            status = TextFormat("CUSTO: %d - clique para comprar", cost);
+                            statusColor = GOLD;
+                        } else if (hoveredNode == branchLevel) {
+                            status = TextFormat("CUSTO: %d - ouro insuficiente", cost);
+                            statusColor = RED;
+                        } else {
+                            status = TextFormat("CUSTO: %d - requer o no anterior", cost);
+                            statusColor = GRAY;
+                        }
+
+                        const int titleSize = 18;
+                        const int textSize = 16;
+                        const int padding = 10;
+                        const int lineGap = 6;
+
+                        int boxWidth = MeasureText(title, titleSize);
+                        if (MeasureText(description, textSize) > boxWidth)
+                            boxWidth = MeasureText(description, textSize);
+                        if (MeasureText(status, textSize) > boxWidth)
+                            boxWidth = MeasureText(status, textSize);
+                        boxWidth += padding * 2;
+
+                        int boxHeight = padding * 2 + titleSize + textSize * 2 + lineGap * 2;
+
+                        // sai de baixo do cursor e vira para dentro da tela quando nao cabe
+                        float boxX = cursor.x + 18.0f;
+                        float boxY = cursor.y + 18.0f;
+
+                        if (boxX + boxWidth > GAME.screen.Width)
+                            boxX = cursor.x - 18.0f - boxWidth;
+                        if (boxY + boxHeight > GAME.screen.Height)
+                            boxY = cursor.y - 18.0f - boxHeight;
+
+                        DrawRectangle((int)boxX, (int)boxY, boxWidth, boxHeight, Fade(BLACK, 0.9f));
+                        DrawRectangleLines((int)boxX, (int)boxY, boxWidth, boxHeight, WHITE);
+
+                        int textX = (int)boxX + padding;
+                        int textY = (int)boxY + padding;
+
+                        DrawText(title, textX, textY, titleSize, WHITE);
+                        textY += titleSize + lineGap;
+                        DrawText(description, textX, textY, textSize, LIGHTGRAY);
+                        textY += textSize + lineGap;
+                        DrawText(status, textX, textY, textSize, statusColor);
+                    }
+                }
+
+                const bool backButtonHovered =
+                    CheckCollisionPointRec(GetMousePosition(), statusTreeBackButton);
+                DrawRectangleRec(statusTreeBackButton,
+                    backButtonHovered ? MAROON : RED);
+                DrawRectangleLinesEx(statusTreeBackButton, 2.0f, WHITE);
+                DrawText(
+                    "VOLTAR",
+                    (int)(statusTreeBackButton.x + statusTreeBackButton.width / 2.0f) -
+                        MeasureText("VOLTAR", 20) / 2,
+                    (int)statusTreeBackButton.y + 12,
+                    20,
+                    WHITE
+                );
             } else if (GAME.gameState == MAP) {
                 DrawRectangle(0, 0, GAME.screen.Width, GAME.screen.Height, YELLOW);
                 DrawTextPro(GetFontDefault(), "MAPA", GAME.screen.Center, (Vector2){60, 20}, 0.0f, 40.0f, 5.0f, BLACK);
@@ -1014,7 +2012,12 @@ int main() {
                         WHITE
                     );
 
-                    {
+                    // ---- PROPS RASTEIROS (lago, arbusto) ----
+                    // Sao chao: ficam sempre embaixo de todo mundo.
+                    drawGroundProps(worldProps, visibleWorld, GAME.debugModeON);
+
+                    // Grid de colisao (F1): e a peneira rapida, nao a colisao em si.
+                    if (GAME.debugModeON) {
                         Vector2 beg = GetScreenToWorld2D({0, 0}, camera);
                         Vector2 end = GetScreenToWorld2D({(float)GAME.screen.Width, (float)GAME.screen.Height}, camera);
 
@@ -1026,110 +2029,187 @@ int main() {
 
                         for (int y = y0; y <= y1; y++) {
                             for (int x = x0; x <= x1; x++) {
-                                if (tileAt(x, y) == WALL)
-                                    DrawRectangle(x * GAME.TILE, y * GAME.TILE, GAME.TILE, GAME.TILE, DARKGRAY);
+                                if (tileAt(x, y) != FLOOR)
+                                    DrawRectangleLines(x * GAME.TILE, y * GAME.TILE,
+                                        GAME.TILE, GAME.TILE, Fade(WHITE, 0.25f));
                             }
                         }
                     }
-                    
-                    if (GAME.gameState == PLAYING || GAME.gameState == PAUSED ||
-                        GAME.gameState == SETTINGS) {
-                        Rectangle playerSource = {
-                            player.currentFrame * 128.0f,
-                            0.0f,
-                            128.0f,
-                            128.0f
-                        };
 
-                        if (player.facingLeft)
-                            playerSource.width = -playerSource.width;
-                        
-                        const float SPRITE_SIZE = 96.0f;
-                        Vector2 off = getPlayerSprites().offset;
-                        float dir = player.facingLeft ? -1.0f : 1.0f;
+                    const bool drawEntities =
+                        GAME.gameState == PLAYING || GAME.gameState == PAUSED ||
+                        GAME.gameState == SETTINGS || GAME.gameState == PLAYER_DYING ||
+                        GAME.gameState == GAME_OVER;
 
-                        Rectangle playerDestination = {
-                            player.body.position.x + off.x * dir,
-                            player.body.position.y + off.y,
-                            SPRITE_SIZE,
-                            SPRITE_SIZE
-                        };
-
-                        DrawTexturePro(
-                            getPlayerTexture(),
-                            playerSource,
-                            playerDestination,
-                            (Vector2){ SPRITE_SIZE / 2.0f, SPRITE_SIZE / 2.0f },
-                            0.0f,
-                            WHITE
-                        );
-                        
-                        if (GAME.debugModeON) {
-                            DrawRectangleLinesEx(getHitbox(player.body.position, player.body.collider), 2.0f, ORANGE);
-                            DrawLine(player.body.position.x, player.body.position.y - 60,
-                                    player.body.position.x, player.body.position.y + 60, GREEN);
-                        }
-                
-                        for (int i = 0; i < enemiesAmount; i++) {
-                            EnemySprites& sprites = getEnemySprites(GAME.enemies[i].type);
-                            Texture2D enemyTexture = sprites.walk;
-                            int currentFrame = enemyCurrentFrame;
-
-                            if (GAME.enemies[i].enemyState == EnemyState::ATTACKING) {
-                                enemyTexture = sprites.attack;
-                                currentFrame = GAME.enemies[i].attackFrame;
-                            } else if (GAME.enemies[i].enemyState == EnemyState::IDLE) {
-                                currentFrame = 0;
-                            }
-
-                            Rectangle enemySource = {
-                                currentFrame * 128.0f,
-                                0.0f,
-                                128.0f,
-                                128.0f
-                            };
-                            if (GAME.enemies[i].facingLeft)
-                                enemySource.width = -enemySource.width;
-
-                            Rectangle enemyDestination = {
-                                GAME.enemies[i].body.position.x - 48.0f,
-                                GAME.enemies[i].body.position.y - 48.0f,
-                                96.0f,
-                                96.0f
-                            };
+                    // ---- OURO NO CHAO (PLACEHOLDER: quadrado amarelo) ----
+                    // Tambem e chao: fica embaixo das entidades.
+                    // Trocar este bloco por um DrawTexturePro quando o sprite existir.
+                    if (drawEntities) {
+                        for (const GoldDrop& drop : GAME.goldDrops) {
+                            float bob = sinf(drop.bobTimer * 4.0f) * 2.0f;
+                            int goldX = (int)(drop.position.x - goldSize / 2.0f);
+                            int goldY = (int)(drop.position.y - goldSize / 2.0f + bob);
 
                             DrawTexturePro(
-                                enemyTexture,
-                                enemySource,
-                                enemyDestination,
-                                (Vector2){0.0f, 0.0f},
+                                effectsSprites.coin,
+                                (Rectangle){ drop.currentFrame * 16.0f + 2.0f, 0.0f, 13.0f, 13.0f, },
+                                (Rectangle){ (float)goldX, (float)goldY, goldSize, goldSize },
+                                (Vector2){ 0, 0 },
+                                0.0f,
+                                WHITE
+                            );
+
+                            /*
+                            DrawRectangle(goldX, goldY, (int)goldSize, (int)goldSize, GOLD);
+                            DrawRectangleLines(goldX, goldY, (int)goldSize, (int)goldSize, ORANGE);
+                            */
+
+                            if (GAME.debugModeON)
+                                DrawCircleLines((int)drop.position.x, (int)drop.position.y,
+                                    goldMagnetRadius, YELLOW);
+                        }
+                    }
+
+                    if (drawEntities) {
+                        for (const AxeDrop& drop : GAME.axeDrops) {
+                            float bob = sinf(drop.bobTimer * 5.0f) * 3.0f;
+                            DrawTexturePro(
+                                effectsSprites.axe,
+                                (Rectangle){
+                                    0.0f,
+                                    0.0f,
+                                    (float)effectsSprites.axe.width,
+                                    (float)effectsSprites.axe.height
+                                },
+                                (Rectangle){
+                                    drop.position.x - 20.0f,
+                                    drop.position.y - 20.0f + bob,
+                                    40.0f,
+                                    40.0f
+                                },
+                                (Vector2){ 0.0f, 0.0f },
                                 0.0f,
                                 WHITE
                             );
 
                             if (GAME.debugModeON)
-                                DrawRectangleLinesEx(getHitbox(GAME.enemies[i].body.position, GAME.enemies[i].body.collider), 1.0f, ORANGE);
+                                DrawCircleLines(
+                                    (int)drop.position.x,
+                                    (int)drop.position.y,
+                                    axePickupRadius,
+                                    YELLOW
+                                );
                         }
-                        if (!GAME.projectiles.empty()) {
-                            for (const auto bullet : GAME.projectiles) {
-                                Rectangle bulletSprite = {bullet.body.position.x, bullet.body.position.y, 8.0f, 4.0f};
-                                DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
-
-                                if (GAME.debugModeON)
-                                    DrawRectangleLinesEx(getHitbox(bullet.body.position, bullet.body.collider), 1.0f, ORANGE);
-                            }
-                        }
-
-
-                        // tempbullet DEBUG DEBUG DEBUG -----------------------------------------------------------
-                        Rectangle tempBulletSprite = {tempbullet.body.position.x, tempbullet.body.position.y, 8.0f, 4.0f};
-                        DrawRectanglePro(tempBulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(tempbullet.direction.y, tempbullet.direction.x) * RAD2DEG), YELLOW);
-                        DrawRectangleLinesEx(getHitbox(tempbullet.body.position, tempbullet.body.collider), 1.0f, ORANGE);
-                        // DEBUG DEBUG DEBUG ----------------------------------------------------------------------
-
-                    } else if (GAME.gameState == INVENTORY) {
-                        DrawRectangle((camera.target.x - GAME.screen.Center.x + GAME.screen.Width/10.0f), (camera.target.y - GAME.screen.Center.y + GAME.screen.Height/10.0f), 8.0f * GAME.screen.Width/10.0f, 8.0f * GAME.screen.Height/10.0f, BLACK);
                     }
+
+                    // ---------------- ORDENACAO POR Y ----------------
+                    // Quem esta mais embaixo na tela esta mais perto da camera, e
+                    // por isso e desenhado por ultimo. E isto que faz o player
+                    // sumir atras da copa da arvore quando passa por tras dela, e
+                    // aparecer na frente quando passa na frente - sem isso, ou os
+                    // props cobrem sempre, ou nunca.
+                    //
+                    // A chave de ordenacao e o PE de cada objeto (a base), nunca o
+                    // topo: e o pe que diz quem esta mais perto da camera.
+                    drawOrder.clear();
+
+                    for (int i = 0; i < (int)worldProps.size(); i++) {
+                        const Prop& prop = worldProps[i];
+
+                        if (isGroundProp(prop.type))
+                            continue;   // ja saiu no chao
+
+                        Rectangle rect = {
+                            prop.position.x, prop.position.y, prop.size.x, prop.size.y
+                        };
+
+                        if (!CheckCollisionRecs(rect, visibleWorld))
+                            continue;   // fora da tela
+
+                        drawOrder.push_back({ prop.position.y + prop.size.y, DRAW_PROP, i });
+                    }
+
+                    if (drawEntities) {
+                        for (int i = 0; i < (int)GAME.enemies.size(); i++) {
+                            // +50 fixo, e nao o collider: o do inimigo e zerado
+                            // quando ele morre, e o corpo caido ainda precisa de
+                            // uma chave de ordenacao coerente.
+                            drawOrder.push_back({
+                                GAME.enemies[i].body.position.y + 50.0f, DRAW_ENEMY, i });
+                        }
+
+                        drawOrder.push_back({
+                            player.body.position.y + player.body.collider.offset.y +
+                                player.body.collider.size.y / 2.0f,
+                            DRAW_PLAYER, 0 });
+                    }
+
+                    sort(drawOrder.begin(), drawOrder.end(),
+                        [](const DrawItem& a, const DrawItem& b) { return a.sortY < b.sortY; });
+
+                    for (const DrawItem& item : drawOrder) {
+                        if (item.kind == DRAW_PROP)
+                            drawProp(worldProps[item.index], GAME.debugModeON);
+                        else if (item.kind == DRAW_ENEMY)
+                            drawEnemySprite(item.index);
+                        else
+                            drawPlayerSprite();
+                    }
+
+                    // ---- BALAS ----
+                    // Estao no ar: passam por cima de tudo, sem ordenacao.
+                    if (drawEntities) {
+                        for (const auto& bullet : GAME.projectiles) {
+                            Rectangle bulletSprite = {bullet.body.position.x, bullet.body.position.y, 8.0f, 4.0f};
+                            DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
+
+                            if (GAME.debugModeON)
+                                DrawRectangleLinesEx(getHitbox(bullet.body.position, bullet.body.collider), 1.0f, ORANGE);
+                        }
+                    }
+
+                    if (GAME.axeOwned && GAME.axeSwingTimer > 0.0f) {
+                        float baseAngle =
+                            atan2f(GAME.axeSwingDirection.y, GAME.axeSwingDirection.x);
+                        float swingProgress =
+                            1.0f - Clamp(GAME.axeSwingTimer / axeSwingDuration, 0.0f, 1.0f);
+
+                        Vector2 previousPoint = player.body.position;
+                        for (int step = -6; step <= 6; step++) {
+                            float angleOffset = (float)step / 6.0f * axeAttackAngle * DEG2RAD;
+                            float angle =
+                                baseAngle - axeAttackAngle * DEG2RAD +
+                                swingProgress * 2.0f * axeAttackAngle * DEG2RAD +
+                                angleOffset * 0.45f;
+                            Vector2 point = {
+                                player.body.position.x + cosf(angle) * axeAttackRange,
+                                player.body.position.y + sinf(angle) * axeAttackRange
+                            };
+
+                            if (step > -6)
+                                DrawLineEx(previousPoint, point, 5.0f,
+                                    step == 0 ? RAYWHITE : ORANGE);
+
+                            previousPoint = point;
+                        }
+
+                        float centralAngle =
+                            baseAngle - axeAttackAngle * DEG2RAD +
+                            swingProgress * 2.0f * axeAttackAngle * DEG2RAD;
+                        Vector2 slashEnd = {
+                            player.body.position.x + cosf(centralAngle) * (axeAttackRange + 12.0f),
+                            player.body.position.y + sinf(centralAngle) * (axeAttackRange + 12.0f)
+                        };
+                        DrawLineEx(player.body.position, slashEnd, 8.0f,
+                            Fade(RAYWHITE, 0.95f));
+                        DrawCircleLines(
+                            (int)player.body.position.x,
+                            (int)player.body.position.y,
+                            axeAttackRange,
+                            Fade(YELLOW, 0.75f)
+                        );
+                    }
+
                 EndMode2D();
             }
             if (GAME.gameState == PAUSED || GAME.gameState == SETTINGS) {
@@ -1141,14 +2221,14 @@ int main() {
                     DrawText("PAUSADO", 555, 185, 36, WHITE);
 
                     const Rectangle pauseButtons[] = {
-                        resumeButton, menuButton, settingsButton
+                        resumeButton, restartButton, menuButton, settingsButton
                     };
                     const char* pauseLabels[] = {
-                        "VOLTAR AO JOGO", "VOLTAR AO MENU", "CONFIGURACOES"
+                        "VOLTAR AO JOGO", "REINICIAR", "VOLTAR AO MENU", "CONFIGURACOES"
                     };
                     const Vector2 mousePosition = GetMousePosition();
 
-                    for (int i = 0; i < 3; i++) {
+                    for (int i = 0; i < 4; i++) {
                         bool hovered = CheckCollisionPointRec(mousePosition, pauseButtons[i]);
                         DrawRectangleRec(pauseButtons[i], hovered ? BLUE : DARKBLUE);
                         DrawRectangleLinesEx(pauseButtons[i], 2.0f, WHITE);
@@ -1181,24 +2261,101 @@ int main() {
                     DrawRectangleRec(settingsBackButton, hovered ? BLUE : DARKBLUE);
                     DrawRectangleLinesEx(settingsBackButton, 2.0f, WHITE);
                     DrawText("VOLTAR", 600, 517, 20, WHITE);
-                    DrawText("ESC: voltar para a pausa", 520, 590, 18, LIGHTGRAY);
+                    DrawText(
+                        settingsReturnState == MENU ? "ESC: voltar para o menu"
+                                                    : "ESC: voltar para a pausa",
+                        520, 590, 18, LIGHTGRAY);
                 }
+            }
+            if (GAME.gameState == GAME_OVER) {
+                // escurecimento e menu entram juntos, em fade, sobre o mundo congelado
+                float fade = Clamp(gameOverFadeTimer / gameOverFadeDuration, 0.0f, 1.0f);
+
+                DrawRectangle(0, 0, GAME.screen.Width, GAME.screen.Height, Fade(BLACK, 0.7f * fade));
+
+                DrawRectangleRec(gameOverWindow, Fade(DARKGRAY, fade));
+                DrawRectangleLinesEx(gameOverWindow, 3.0f, Fade(WHITE, fade));
+
+                DrawText("GAME OVER",
+                    (int)GAME.screen.Center.x - MeasureText("GAME OVER", 50) / 2,
+                    285, 50, Fade(RED, fade));
+
+                bool gameOverHovered = CheckCollisionPointRec(GetMousePosition(), gameOverMenuButton);
+                DrawRectangleRec(gameOverMenuButton, Fade(gameOverHovered ? BLUE : DARKBLUE, fade));
+                DrawRectangleLinesEx(gameOverMenuButton, 2.0f, Fade(WHITE, fade));
+                DrawText("VOLTAR AO MENU",
+                    (int)(gameOverMenuButton.x + gameOverMenuButton.width / 2.0f) -
+                        MeasureText("VOLTAR AO MENU", 20) / 2,
+                    (int)gameOverMenuButton.y + 17, 20, Fade(WHITE, fade));
             }
             if (GAME.gameState == MENU || GAME.gameState == STATUS_TREE)
                 DrawText(TextFormat("GOLD: %d", GAME.gold), GAME.screen.Width - 180, 20, 24, GOLD);
-            if (GAME.gameState != MENU && GAME.gameState != STATUS_TREE)
-                DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
-            if (GAME.debugModeON) DrawLineV(GAME.screen.Center, mouseScreen, RED);
-            DrawText(TextFormat("seed: %u", GAME.seed), 10, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
+            if (GAME.gameState == PLAYING || GAME.gameState == PAUSED ||
+                GAME.gameState == PLAYER_DYING) {
+                const int healthBarX = 10;
+                const int healthBarY = 10;
+                const int healthBarWidth = 220;
+                const int healthBarHeight = 28;
+                const float healthRatio = player.maxHealthPoints > 0
+                    ? Clamp((float)player.healthPoints / player.maxHealthPoints, 0.0f, 1.0f)
+                    : 0.0f;
+                const int filledHealthWidth =
+                    (int)((healthBarWidth - 4) * healthRatio);
+
+                DrawRectangle(healthBarX - 2, healthBarY - 2,
+                    healthBarWidth + 4, healthBarHeight + 4, Fade(BLACK, 0.7f));
+                DrawRectangle(healthBarX, healthBarY,
+                    healthBarWidth, healthBarHeight, Fade(MAROON, 0.65f));
+                if (filledHealthWidth > 0) {
+                    DrawRectangle(healthBarX + 2, healthBarY + 2,
+                        filledHealthWidth, healthBarHeight - 4, RED);
+                    DrawRectangle(healthBarX + 2, healthBarY + 2,
+                        filledHealthWidth, 5, Fade(WHITE, 0.25f));
+                }
+                DrawRectangleLinesEx(
+                    (Rectangle){ (float)healthBarX, (float)healthBarY,
+                        (float)healthBarWidth, (float)healthBarHeight },
+                    2.0f,
+                    WHITE
+                );
+
+                DrawTexturePro(
+                    skullIcon,
+                    (Rectangle){ 0.0f, 0.0f, (float)skullIcon.width, (float)skullIcon.height },
+                    (Rectangle){ (float)GAME.screen.Width -38.0f, 14.0f, 28.0f, 28.0f },
+                    (Vector2){ 0, 0 },
+                    0.0f,
+                    WHITE
+                );
+                DrawText(TextFormat("%d", GAME.normalZombiesKilled), GAME.screen.Width - 65, 20, 24, WHITE);
+
+                DrawTexturePro(
+                    effectsSprites.coin,
+                    (Rectangle){ 2.0f, 0.0f, 13.0f, 13.0f },
+                    (Rectangle){ 12.0f, 49.0f, 28.0f, 28.0f },
+                    (Vector2){ 0, 0 },
+                    0.0f,
+                    WHITE
+                );
+                DrawText(TextFormat("%d", GAME.runGold), 48, 53, 22, GOLD);
+                if (GAME.debugModeON) {
+                    if (GAME.gameState == PLAYING)
+                        DrawLineV(Vector2Add(GAME.screen.Center, player.projectileOffset), mouseScreen, RED);
+                    DrawText(TextFormat("seed: %u", GAME.seed), GAME.screen.Width - 180, 10, 20, WHITE);      // Debug: escreve a seed no canto da tela
+                }
+            }
         EndDrawing();
     }
 
     // De-Initialization
     //--------------------------------------------------------------------------------------
+    saveMusicVolume(musicVolume);   // garante o volume salvo mesmo fechando pelo X
+
     UnloadTexture(background);
     UnloadTexture(menuBackground);
     UnloadTexture(skillTreeBackground);
     UnloadTexture(defenseStatsIcon);
+    UnloadTexture(skullIcon);
 
     UnloadTexture(kitsuneSprites.idle);
     UnloadTexture(kitsuneSprites.run);
@@ -1215,9 +2372,36 @@ int main() {
     UnloadTexture(soldierSprites.attack);
     UnloadTexture(soldierSprites.dead);
 
+    UnloadTexture(propSprites.tree1);
+    UnloadTexture(propSprites.tree2);
+    UnloadTexture(propSprites.bush);
+    UnloadTexture(propSprites.rock);
+
     UnloadTexture(zombieSprites.walk);
+    UnloadTexture(zombieSprites.idle);
     UnloadTexture(zombieSprites.attack);
     UnloadTexture(zombieSprites.dead);
+    UnloadTexture(minotaur1Sprites.walk);
+    UnloadTexture(minotaur1Sprites.idle);
+    UnloadTexture(minotaur1Sprites.attack);
+    UnloadTexture(minotaur1Sprites.dead);
+    UnloadTexture(minotaur2Sprites.walk);
+    UnloadTexture(minotaur2Sprites.idle);
+    UnloadTexture(minotaur2Sprites.attack);
+    UnloadTexture(minotaur2Sprites.dead);
+    UnloadTexture(minotaur3Sprites.walk);
+    UnloadTexture(minotaur3Sprites.idle);
+    UnloadTexture(minotaur3Sprites.attack);
+    UnloadTexture(minotaur3Sprites.dead);
+
+    UnloadTexture(propSprites.bush);
+    UnloadTexture(propSprites.rock);
+    UnloadTexture(propSprites.tree1);
+    UnloadTexture(propSprites.tree2);
+
+    UnloadTexture(effectsSprites.coin);
+    UnloadTexture(effectsSprites.axe);
+
     UnloadMusicStream(menuMusic);
     UnloadMusicStream(gameMusic);
     CloseAudioDevice();
