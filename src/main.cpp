@@ -2,6 +2,8 @@
 #include "raymath.h"
 #include "debug.h"
 #include "skillTreeDescriptions.h"
+#include "worldGeneration.h"
+#include <algorithm>   // sort, para a ordenacao por Y do desenho
 #include <math.h>
 #include <stdio.h>   // sscanf, para ler o settings.txt
 #include <vector>
@@ -21,7 +23,6 @@ enum PlayerAnimation { PLAYER_RUN, PLAYER_IDLE, PLAYER_ATTACK, PLAYER_DEAD};
 
 enum GameState { MENU, PLAYING, INVENTORY, MAP, STATUS_TREE, PAUSED, SETTINGS, PLAYER_DYING, GAME_OVER };
 enum EnemyState { ROAMING, SEARCHING, ATTACKING, IDLE, DYING};
-enum TileType { FLOOR, WALL, WATER };
 
 //------------------------------------------------------------------------------------------
 //------------------------------------------------------------------------------------------
@@ -87,9 +88,9 @@ struct GoldDrop {
 struct GameStructure {
     GameState gameState = MENU;      // variável que guarda o estado do jogo para recursos de menu e mapa
     static const int TILE = 32;         // tamanho de cada "quadrado" da matriz em pixels
-    static const int MAP_W = 94;        // largura (width) do mapa em tiles ("quadrados") na matriz do jogo
-    static const int MAP_H = 94;        // altura (height) do mapa em tiles ("quadrados") na matriz do jogo
-    // mundo em pixels = MAP_W * TILE = 3008 pixels
+    static const int MAP_W = 157;       // largura (width) do mapa em tiles ("quadrados") na matriz do jogo
+    static const int MAP_H = 157;       // altura (height) do mapa em tiles ("quadrados") na matriz do jogo
+    // mundo em pixels = MAP_W * TILE = 5024 pixels
 
     bool debugModeON = false;
 
@@ -268,6 +269,8 @@ EnemySprites zombieSprites;
 
 // Vetor unidimensional que guarda os tipos de tiles
 vector<TileType> tiles(GAME.MAP_W * GAME.MAP_H, FLOOR);
+// Props do cenario (arvore, pedra, arbusto, lago), gerados a cada run
+vector<Prop> worldProps;
 TileType& tileAt(int x, int y) { return tiles[y * GAME.MAP_W + x]; }        // Função que retorna o tipo do tile na posição (x, y)
 
 
@@ -277,7 +280,7 @@ bool isWall(float x, float y) {
 
     if (tileX < 0 || tileY < 0 || tileX >= GAME.MAP_W || tileY >= GAME.MAP_H) return true;
 
-    return tileAt(tileX, tileY) == WALL;
+    return tileAt(tileX, tileY) != FLOOR;   // WALL e WATER bloqueiam
 }
 
 
@@ -292,22 +295,90 @@ Rectangle getHitbox(Vector2 pos, const Collider& c) {
 }
 
 
+// true se a hitbox nessa posicao cobre algum tile solido.
+// Testa a FAIXA INTEIRA de tiles, e nao so os quatro cantos: a hitbox do player
+// tem 64px de altura, entao um tile solido caberia inteiro entre dois cantos e
+// passaria despercebido.
+bool hitsWall(Vector2 position, const Collider& collider) {
+    Rectangle box = getHitbox(position, collider);
+
+    // 1) Borda do mundo, testada em pixels (indice de tile negativo trunca para
+    //    zero em C++ e deixaria passar quem esta saindo pela esquerda/topo).
+    if (box.x < 0.0f || box.y < 0.0f ||
+        box.x + box.width  > (float)GAME.world.Width ||
+        box.y + box.height > (float)GAME.world.Height)
+        return true;
+
+    // 2) Peneira rapida no grid. O carimbo de um prop e sempre MAIOR que a
+    //    parte solida dele, entao nenhum tile tocado aqui significa, com
+    //    certeza, nenhuma colisao - e sai sem olhar prop nenhum.
+    //    Testa a faixa inteira de tiles, e nao so os quatro cantos: a hitbox do
+    //    player tem 64px de altura, e um tile caberia inteiro entre dois cantos.
+    int firstTileX = (int)(box.x / GAME.TILE);
+    int firstTileY = (int)(box.y / GAME.TILE);
+    int lastTileX  = (int)((box.x + box.width  - 1) / GAME.TILE);
+    int lastTileY  = (int)((box.y + box.height - 1) / GAME.TILE);
+
+    bool maybeBlocked = false;
+
+    for (int tileY = firstTileY; tileY <= lastTileY && !maybeBlocked; tileY++)
+        for (int tileX = firstTileX; tileX <= lastTileX; tileX++)
+            if (tileAt(tileX, tileY) != FLOOR) {
+                maybeBlocked = true;
+                break;
+            }
+
+    if (!maybeBlocked)
+        return false;
+
+    // 3) Confirmacao exata contra a BASE do prop. E este passo que tira a
+    //    barreira de ar: o grid arredonda para tiles de 32px, o retangulo nao.
+    return propsBlock(worldProps, box);
+}
+
+
+// Move testando UM EIXO DE CADA VEZ. Batendo numa arvore, a entidade para
+// naquele eixo mas continua andando no outro: ela desliza contornando o
+// obstaculo em vez de grudar nele.
+Vector2 moveWithCollision(Vector2 position, Vector2 delta, const Collider& collider) {
+    Vector2 result = position;
+
+    Vector2 tryX = { result.x + delta.x, result.y };
+    if (!hitsWall(tryX, collider))
+        result = tryX;
+
+    Vector2 tryY = { result.x, result.y + delta.y };
+    if (!hitsWall(tryY, collider))
+        result = tryY;
+
+    return result;
+}
+
+
 // Gera os inimigos na volta do personagem
 void createEnemies(vector<Enemy> &enemies, int enemiesAmount){
     uniform_int_distribution<int> ranHeight(0, GAME.MAP_H * GAME.TILE - 40);
     uniform_int_distribution<int> ranWidth(0, GAME.MAP_W * GAME.TILE - 40);
 
     for(int i = 0; i < enemiesAmount; i++){
-        do {
+        // o collider vem antes da posicao porque o teste de parede usa ele
+        enemies[i].body.collider.offset = { 0, 25 };
+        enemies[i].body.collider.size   = { 20, 50 };
+
+        // Procura um lugar longe do player e fora de arvore/pedra/lago.
+        // O limite de tentativas evita laco infinito se o mapa estiver cheio.
+        const int maxSpawnAttempts = 50;
+
+        for (int attempt = 0; attempt < maxSpawnAttempts; attempt++) {
             enemies[i].body.position = {
                 (float)ranWidth(gen),
                 (float)ranHeight(gen)
             };
 
-        } while (Vector2Distance(enemies[i].body.position, player.body.position) < 150);
-
-        enemies[i].body.collider.offset = { 0, 25 };
-        enemies[i].body.collider.size   = { 20, 50 };
+            if (Vector2Distance(enemies[i].body.position, player.body.position) >= 150 &&
+                !hitsWall(enemies[i].body.position, enemies[i].body.collider))
+                break;
+        }
     }
 
 }
@@ -378,7 +449,16 @@ void enemyMovement(vector<Enemy>& enemies, int enemyIndex) {
         }
     }
 
-    enemy.body.position = nextPosition;
+    Vector2 delta = Vector2Subtract(nextPosition, enemy.body.position);
+    Vector2 moved = moveWithCollision(enemy.body.position, delta, enemy.body.collider);
+
+    // Bateu numa parede enquanto vagava sem rumo: sorteia outra direcao agora,
+    // em vez de ficar empurrando o obstaculo ate o timer de roaming acabar.
+    if (enemy.enemyState == EnemyState::ROAMING &&
+        moved.x == enemy.body.position.x && moved.y == enemy.body.position.y)
+        enemy.roamingMovementTimer = 0.0f;
+
+    enemy.body.position = moved;
 }
 
 PlayerSprites& getPlayerSprites() {
@@ -509,6 +589,17 @@ void saveMusicVolume(int volume) {
         - criar sistema de xp e levels
         - criar geração de poderes aleatórios a cada level novo
 */
+
+
+// Item da fila de desenho ordenada por Y. Ver o bloco "ORDENACAO POR Y" no
+// desenho do mundo.
+enum DrawKind { DRAW_PROP, DRAW_ENEMY, DRAW_PLAYER };
+
+struct DrawItem {
+    float sortY;     // o PE do objeto: quem tem o pe mais embaixo fica na frente
+    DrawKind kind;
+    int index;       // posicao no vetor correspondente ao kind
+};
 
 
 // raylib.com
@@ -725,6 +816,86 @@ int main() {
     player.body.collider.size =     { 32.0f, 64.0f };
     player.body.collider.offset =   { 0.0f, 24.0f };
 
+    // Fila de desenho ordenada por Y, remontada todo frame. Declarada aqui fora
+    // para reaproveitar a memoria em vez de alocar 60 vezes por segundo.
+    vector<DrawItem> drawOrder;
+
+    // O desenho do inimigo e o do player viraram lambdas porque a ordenacao por
+    // Y precisa chamar os dois intercalados com os props, em ordem variavel.
+    auto drawEnemySprite = [&](int index) {
+        Enemy& enemy = GAME.enemies[index];
+        EnemySprites& sprites = getEnemySprites(enemy.type);
+        Texture2D enemyTexture = sprites.walk;
+        int currentFrame = enemyCurrentFrame;
+
+        if (enemy.enemyState == EnemyState::DYING) {
+            enemyTexture = sprites.dead;
+            currentFrame = enemy.deathFrame;
+        } else if (enemy.enemyState == EnemyState::ATTACKING) {
+            enemyTexture = sprites.attack;
+            currentFrame = enemy.attackFrame;
+        } else if (enemy.enemyState == EnemyState::IDLE) {
+            currentFrame = 0;
+        }
+
+        Rectangle enemySource = { currentFrame * 128.0f, 0.0f, 128.0f, 128.0f };
+
+        if (enemy.facingLeft)
+            enemySource.width = -enemySource.width;
+
+        Rectangle enemyDestination = {
+            enemy.body.position.x - 48.0f,
+            enemy.body.position.y - 48.0f,
+            96.0f,
+            96.0f
+        };
+
+        DrawTexturePro(enemyTexture, enemySource, enemyDestination,
+            (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
+
+        if (GAME.debugModeON && enemy.enemyState != EnemyState::DYING)
+            DrawRectangleLinesEx(getHitbox(enemy.body.position, enemy.body.collider),
+                1.0f, ORANGE);
+    };
+
+    auto drawPlayerSprite = [&]() {
+        Rectangle playerSource = {
+            player.currentFrame * 128.0f,
+            0.0f,
+            128.0f,
+            128.0f
+        };
+
+        if (player.facingLeft)
+            playerSource.width = -playerSource.width;
+
+        const float SPRITE_SIZE = 96.0f;
+        Vector2 off = getPlayerSprites().offset;
+        float dir = player.facingLeft ? -1.0f : 1.0f;
+
+        Rectangle playerDestination = {
+            player.body.position.x + off.x * dir,
+            player.body.position.y + off.y,
+            SPRITE_SIZE,
+            SPRITE_SIZE
+        };
+
+        DrawTexturePro(
+            getPlayerTexture(),
+            playerSource,
+            playerDestination,
+            (Vector2){ SPRITE_SIZE / 2.0f, SPRITE_SIZE / 2.0f },
+            0.0f,
+            WHITE
+        );
+
+        if (GAME.debugModeON) {
+            DrawRectangleLinesEx(getHitbox(player.body.position, player.body.collider), 2.0f, ORANGE);
+            DrawLine(player.body.position.x, player.body.position.y - 60,
+                    player.body.position.x, player.body.position.y + 60, GREEN);
+        }
+    };
+
     //--------------------------------------------------------------------------------------
 
     // Main game loop
@@ -759,12 +930,14 @@ int main() {
                 GAME.projectiles.clear();
                 GAME.goldDrops.clear();
                 GAME.runGold = 0;
-                GAME.enemies.assign(enemiesAmount, Enemy{});
-                createEnemies(GAME.enemies, enemiesAmount);
 
                 // Reset do player. Os campos sao zerados um a um (e nao com
                 // player = Players{}) justamente para preservar o que foi comprado
                 // na arvore de status: attackPower, defense, speed e os niveis.
+                //
+                // Vem ANTES da geracao e do createEnemies de proposito: os dois
+                // usam a posicao do player (spawn limpo e distancia minima dos
+                // inimigos), e antes ela ainda era a do fim da run passada.
                 player.healthPoints = player.maxHealthPoints;
                 player.body.speed = (float)player.speed;   // aplica o upgrade de movimento
                 player.body.position = GAME.world.Center;
@@ -777,12 +950,22 @@ int main() {
                 GAME.worldTimeScale = 1.0f;
                 gameOverFadeTimer = 0.0f;
 
-                tiles.assign(tiles.size(), FLOOR);  // limpa as paredes da partida anterior
-                for (int i = 0; i < tiles.size(); i++) {
-                    int percentage = GetRandomValue(1, 100);
-                    if (percentage <= 15)
-                        tiles[i] = WALL;
-                }
+                // ---------------- GERACAO DO MUNDO ----------------
+                // Espalha os props e carimba a area solida deles no grid de tiles.
+                // Limpa o grid e reinicia o sorteio por dentro, entao a mesma seed
+                // sempre devolve o mesmo mundo.
+                WorldGenConfig worldConfig;
+                worldConfig.tileSize         = GAME.TILE;
+                worldConfig.mapWidthInTiles  = GAME.MAP_W;
+                worldConfig.mapHeightInTiles = GAME.MAP_H;
+                worldConfig.playerSpawn      = GAME.world.Center;
+
+                generateWorld(worldProps, tiles, worldConfig, seed);
+
+                // Depois do mundo pronto: assim os inimigos evitam nascer dentro
+                // de arvore, pedra ou lago.
+                GAME.enemies.assign(enemiesAmount, Enemy{});
+                createEnemies(GAME.enemies, enemiesAmount);
 
                 StopMusicStream(menuMusic);
                 PlayMusicStream(gameMusic);
@@ -973,8 +1156,12 @@ int main() {
                 setPlayerAnimation(PLAYER_IDLE);
             }
 
-            player.body.position.x += movement.x * player.body.speed;
-            player.body.position.y += movement.y * player.body.speed;
+            Vector2 playerDelta = {
+                movement.x * player.body.speed,
+                movement.y * player.body.speed
+            };
+            player.body.position = moveWithCollision(
+                player.body.position, playerDelta, player.body.collider);
 
             player.body.position.x = Clamp(player.body.position.x, 0.0f, (float)GAME.world.Width);
             player.body.position.y = Clamp(player.body.position.y, 0.0f, (float)GAME.world.Height);
@@ -1548,7 +1735,12 @@ int main() {
                         WHITE
                     );
 
-                    {
+                    // ---- PROPS RASTEIROS (lago, arbusto) ----
+                    // Sao chao: ficam sempre embaixo de todo mundo.
+                    drawGroundProps(worldProps, visibleWorld, GAME.debugModeON);
+
+                    // Grid de colisao (F1): e a peneira rapida, nao a colisao em si.
+                    if (GAME.debugModeON) {
                         Vector2 beg = GetScreenToWorld2D({0, 0}, camera);
                         Vector2 end = GetScreenToWorld2D({(float)GAME.screen.Width, (float)GAME.screen.Height}, camera);
 
@@ -1560,62 +1752,22 @@ int main() {
 
                         for (int y = y0; y <= y1; y++) {
                             for (int x = x0; x <= x1; x++) {
-                                if (tileAt(x, y) == WALL)
-                                    DrawRectangle(x * GAME.TILE, y * GAME.TILE, GAME.TILE, GAME.TILE, DARKGRAY);
+                                if (tileAt(x, y) != FLOOR)
+                                    DrawRectangleLines(x * GAME.TILE, y * GAME.TILE,
+                                        GAME.TILE, GAME.TILE, Fade(WHITE, 0.25f));
                             }
                         }
                     }
 
-                    if (GAME.gameState == PLAYING || GAME.gameState == PAUSED ||
+                    const bool drawEntities =
+                        GAME.gameState == PLAYING || GAME.gameState == PAUSED ||
                         GAME.gameState == SETTINGS || GAME.gameState == PLAYER_DYING ||
-                        GAME.gameState == GAME_OVER) {
+                        GAME.gameState == GAME_OVER;
 
-                        for (int i = 0; i < (int)GAME.enemies.size(); i++) {
-                            EnemySprites& sprites = getEnemySprites(GAME.enemies[i].type);
-                            Texture2D enemyTexture = sprites.walk;
-                            int currentFrame = enemyCurrentFrame;
-
-                            if (GAME.enemies[i].enemyState == EnemyState::DYING) {
-                                enemyTexture = sprites.dead;
-                                currentFrame = GAME.enemies[i].deathFrame;
-                            } else if (GAME.enemies[i].enemyState == EnemyState::ATTACKING) {
-                                enemyTexture = sprites.attack;
-                                currentFrame = GAME.enemies[i].attackFrame;
-                            } else if (GAME.enemies[i].enemyState == EnemyState::IDLE) {
-                                currentFrame = 0;
-                            }
-
-                            Rectangle enemySource = {
-                                currentFrame * 128.0f,
-                                0.0f,
-                                128.0f,
-                                128.0f
-                            };
-                            if (GAME.enemies[i].facingLeft)
-                                enemySource.width = -enemySource.width;
-
-                            Rectangle enemyDestination = {
-                                GAME.enemies[i].body.position.x - 48.0f,
-                                GAME.enemies[i].body.position.y - 48.0f,
-                                96.0f,
-                                96.0f
-                            };
-
-                            DrawTexturePro(
-                                enemyTexture,
-                                enemySource,
-                                enemyDestination,
-                                (Vector2){0.0f, 0.0f},
-                                0.0f,
-                                WHITE
-                            );
-
-                            if (GAME.debugModeON && GAME.enemies[i].enemyState != EnemyState::DYING)
-                                DrawRectangleLinesEx(getHitbox(GAME.enemies[i].body.position, GAME.enemies[i].body.collider), 1.0f, ORANGE);
-                        }
-
-                        // ---- OURO NO CHAO (PLACEHOLDER: quadrado amarelo) ----
-                        // Trocar este bloco por um DrawTexturePro quando o sprite existir.
+                    // ---- OURO NO CHAO (PLACEHOLDER: quadrado amarelo) ----
+                    // Tambem e chao: fica embaixo das entidades.
+                    // Trocar este bloco por um DrawTexturePro quando o sprite existir.
+                    if (drawEntities) {
                         for (const GoldDrop& drop : GAME.goldDrops) {
                             float bob = sinf(drop.bobTimer * 4.0f) * 2.0f;
                             int goldX = (int)(drop.position.x - goldSize / 2.0f);
@@ -1628,60 +1780,78 @@ int main() {
                                 DrawCircleLines((int)drop.position.x, (int)drop.position.y,
                                     goldMagnetRadius, YELLOW);
                         }
-                        if (!GAME.projectiles.empty()) {
-                            for (const auto bullet : GAME.projectiles) {
-                                Rectangle bulletSprite = {bullet.body.position.x, bullet.body.position.y, 8.0f, 4.0f};
-                                DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
+                    }
 
-                                if (GAME.debugModeON)
-                                    DrawRectangleLinesEx(getHitbox(bullet.body.position, bullet.body.collider), 1.0f, ORANGE);
-                            }
-                        }
+                    // ---------------- ORDENACAO POR Y ----------------
+                    // Quem esta mais embaixo na tela esta mais perto da camera, e
+                    // por isso e desenhado por ultimo. E isto que faz o player
+                    // sumir atras da copa da arvore quando passa por tras dela, e
+                    // aparecer na frente quando passa na frente - sem isso, ou os
+                    // props cobrem sempre, ou nunca.
+                    //
+                    // A chave de ordenacao e o PE de cada objeto (a base), nunca o
+                    // topo: e o pe que diz quem esta mais perto da camera.
+                    drawOrder.clear();
 
-                        // ------- INICIO DO DESENHO DO PLAYER --------------
+                    for (int i = 0; i < (int)worldProps.size(); i++) {
+                        const Prop& prop = worldProps[i];
 
-                        Rectangle playerSource = {
-                            player.currentFrame * 128.0f,
-                            0.0f,
-                            128.0f,
-                            128.0f
+                        if (isGroundProp(prop.type))
+                            continue;   // ja saiu no chao
+
+                        Rectangle rect = {
+                            prop.position.x, prop.position.y, prop.size.x, prop.size.y
                         };
 
-                        if (player.facingLeft)
-                            playerSource.width = -playerSource.width;
+                        if (!CheckCollisionRecs(rect, visibleWorld))
+                            continue;   // fora da tela
 
-                        const float SPRITE_SIZE = 96.0f;
-                        Vector2 off = getPlayerSprites().offset;
-                        float dir = player.facingLeft ? -1.0f : 1.0f;
+                        drawOrder.push_back({ prop.position.y + prop.size.y, DRAW_PROP, i });
+                    }
 
-                        Rectangle playerDestination = {
-                            player.body.position.x + off.x * dir,
-                            player.body.position.y + off.y,
-                            SPRITE_SIZE,
-                            SPRITE_SIZE
-                        };
-
-                        DrawTexturePro(
-                            getPlayerTexture(),
-                            playerSource,
-                            playerDestination,
-                            (Vector2){ SPRITE_SIZE / 2.0f, SPRITE_SIZE / 2.0f },
-                            0.0f,
-                            WHITE
-                        );
-
-                        if (GAME.debugModeON) {
-                            DrawRectangleLinesEx(getHitbox(player.body.position, player.body.collider), 2.0f, ORANGE);
-                            DrawLine(player.body.position.x, player.body.position.y - 60,
-                                    player.body.position.x, player.body.position.y + 60, GREEN);
+                    if (drawEntities) {
+                        for (int i = 0; i < (int)GAME.enemies.size(); i++) {
+                            // +50 fixo, e nao o collider: o do inimigo e zerado
+                            // quando ele morre, e o corpo caido ainda precisa de
+                            // uma chave de ordenacao coerente.
+                            drawOrder.push_back({
+                                GAME.enemies[i].body.position.y + 50.0f, DRAW_ENEMY, i });
                         }
 
-                        // ------- FIM DO DESENHO DO PLAYER --------------
+                        drawOrder.push_back({
+                            player.body.position.y + player.body.collider.offset.y +
+                                player.body.collider.size.y / 2.0f,
+                            DRAW_PLAYER, 0 });
+                    }
 
+                    sort(drawOrder.begin(), drawOrder.end(),
+                        [](const DrawItem& a, const DrawItem& b) { return a.sortY < b.sortY; });
 
-                    } else if (GAME.gameState == INVENTORY) {
+                    for (const DrawItem& item : drawOrder) {
+                        if (item.kind == DRAW_PROP)
+                            drawProp(worldProps[item.index], GAME.debugModeON);
+                        else if (item.kind == DRAW_ENEMY)
+                            drawEnemySprite(item.index);
+                        else
+                            drawPlayerSprite();
+                    }
+
+                    // ---- BALAS ----
+                    // Estao no ar: passam por cima de tudo, sem ordenacao.
+                    if (drawEntities) {
+                        for (const auto& bullet : GAME.projectiles) {
+                            Rectangle bulletSprite = {bullet.body.position.x, bullet.body.position.y, 8.0f, 4.0f};
+                            DrawRectanglePro(bulletSprite, (Vector2){4.0f, 2.0f}, (atan2f(bullet.direction.y, bullet.direction.x) * RAD2DEG), YELLOW);
+
+                            if (GAME.debugModeON)
+                                DrawRectangleLinesEx(getHitbox(bullet.body.position, bullet.body.collider), 1.0f, ORANGE);
+                        }
+                    }
+
+                    if (GAME.gameState == INVENTORY) {
                         DrawRectangle((camera.target.x - GAME.screen.Center.x + GAME.screen.Width/10.0f), (camera.target.y - GAME.screen.Center.y + GAME.screen.Height/10.0f), 8.0f * GAME.screen.Width/10.0f, 8.0f * GAME.screen.Height/10.0f, BLACK);
                     }
+
                 EndMode2D();
             }
             if (GAME.gameState == PAUSED || GAME.gameState == SETTINGS) {
