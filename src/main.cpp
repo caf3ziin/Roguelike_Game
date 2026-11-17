@@ -262,6 +262,8 @@ struct EnemySprites {
 
 EnemySprites zombieSprites;
 
+static PropSprites propSprites;
+
 // FIM DAS STRUCTS
 //------------------------------------------------------------------------------------------
 //------------------------------------------------------------------------------------------
@@ -683,6 +685,14 @@ int main() {
     Texture2D menuBackground = LoadTexture("resources/backgrounds/menuBackground.png");
     Texture2D skillTreeBackground = LoadTexture("resources/backgrounds/skillTreeBackground.png");
     Texture2D defenseStatsIcon = LoadTexture("resources/statusImages/defenseStats.png");
+    propSprites.bush = LoadTexture("resources/sprites/props/bush.png");
+    propSprites.rock = LoadTexture("resources/sprites/props/rock.png");
+    propSprites.tree1 = LoadTexture("resources/sprites/props/tree1.png");
+    propSprites.tree2 = LoadTexture("resources/sprites/props/tree2.png");
+
+    // Entrega as texturas ao worldGeneration. Precisa vir antes de gerar o
+    // mundo: o tamanho de cada prop sai da proporcao do sprite.
+    setPropSprites(propSprites);
     Image playerImage = LoadImage("resources/sprites/player/kitsune/Run.png");
     ImageColorReplace(&playerImage, WHITE, BLANK);
     UnloadImage(playerImage);
@@ -1973,9 +1983,20 @@ int main() {
     UnloadTexture(soldierSprites.attack);
     UnloadTexture(soldierSprites.dead);
 
+    UnloadTexture(propSprites.tree1);
+    UnloadTexture(propSprites.tree2);
+    UnloadTexture(propSprites.bush);
+    UnloadTexture(propSprites.rock);
+
     UnloadTexture(zombieSprites.walk);
     UnloadTexture(zombieSprites.attack);
     UnloadTexture(zombieSprites.dead);
+
+    UnloadTexture(propSprites.bush);
+    UnloadTexture(propSprites.rock);
+    UnloadTexture(propSprites.tree1);
+    UnloadTexture(propSprites.tree2);
+
     UnloadMusicStream(menuMusic);
     UnloadMusicStream(gameMusic);
     CloseAudioDevice();
