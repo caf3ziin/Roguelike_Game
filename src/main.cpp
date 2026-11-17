@@ -82,6 +82,9 @@ struct GoldDrop {
     int value = 1;
     float bobTimer = 0.0f;    // balancinho vertical, puramente visual
     float pullSpeed = 0.0f;   // velocidade atual da atracao (acelera enquanto puxa)
+
+    int currentFrame = 0;
+    float frameTimer = 0.0f;
 };
 
 // ESTRUTURA DE CONFIGURAÇÕES GERAIS DO JOGO
@@ -221,14 +224,7 @@ void drawStatusNode(Vector2 center, float radius, bool purchased, bool available
         DrawText(TextFormat("%d", cost), (int)center.x - 5, (int)center.y + radius + 3, 12, WHITE);
 }
 
-void drawDefenseStatusNode(
-    Vector2 center,
-    float radius,
-    bool purchased,
-    bool available,
-    int cost,
-    Texture2D defenseIcon
-) {
+void drawDefenseStatusNode(Vector2 center, float radius, bool purchased, bool available, int cost, Texture2D defenseIcon) {
     drawStatusNode(center, radius, purchased, available, cost, -1);
 
     float iconSize = radius * 1.55f;
@@ -249,7 +245,6 @@ struct PlayerSprites {
     Texture2D dead;
     Vector2 offset = { 4.0f, 0.0f };    // ajuste do boneco dentro do frame
 };
-
 PlayerSprites kitsuneSprites;
 PlayerSprites gangsterSprites;
 PlayerSprites soldierSprites;
@@ -259,8 +254,14 @@ struct EnemySprites {
     Texture2D attack;
     Texture2D dead;
 };
-
 EnemySprites zombieSprites;
+
+
+struct EffectsSprites {
+    Texture2D coin;
+};
+EffectsSprites effectsSprites;
+
 
 static PropSprites propSprites;
 
@@ -689,6 +690,7 @@ int main() {
     propSprites.rock = LoadTexture("resources/sprites/props/rock.png");
     propSprites.tree1 = LoadTexture("resources/sprites/props/tree1.png");
     propSprites.tree2 = LoadTexture("resources/sprites/props/tree2.png");
+    effectsSprites.coin = LoadTexture("resources/sprites/effects/coin_shine.png");
 
     // Entrega as texturas ao worldGeneration. Precisa vir antes de gerar o
     // mundo: o tamanho de cada prop sai da proporcao do sprite.
@@ -730,7 +732,7 @@ int main() {
     const float goldPickupRadius = 16.0f;         // distancia em que o ouro e coletado
     const float goldPullSpeedStart = 60.0f;       // px/s no inicio da atracao
     const float goldPullAcceleration = 900.0f;    // px/s^2 enquanto esta sendo puxado
-    const float goldSize = 10.0f;                 // PLACEHOLDER: lado do quadrado amarelo
+    const float goldSize = 20.0f;                 // PLACEHOLDER: lado do quadrado amarelo
     float gameOverFadeTimer = 0.0f;
     const Rectangle gameOverWindow = { 440.0f, 230.0f, 400.0f, 260.0f };
     const Rectangle gameOverMenuButton = { 490.0f, 390.0f, 300.0f, 55.0f };
@@ -1298,6 +1300,18 @@ int main() {
 
                 enemyMovement(GAME.enemies, i);
             }
+            
+            for (int i = (int)GAME.goldDrops.size() - 1; i >= 0; i--) {
+                GoldDrop& gold = GAME.goldDrops[i];
+
+                gold.frameTimer += getWorldDeltaTime();
+                if (gold.frameTimer >= frameDuration * 2) {
+                    gold.frameTimer = 0.0f;
+                    gold.currentFrame++;
+
+                    if (gold.currentFrame >= 6) gold.currentFrame = 0;
+                }
+            }
         }
 
         // ---------------- MORTE DO PLAYER E GAME OVER ----------------
@@ -1783,8 +1797,19 @@ int main() {
                             int goldX = (int)(drop.position.x - goldSize / 2.0f);
                             int goldY = (int)(drop.position.y - goldSize / 2.0f + bob);
 
+                            DrawTexturePro(
+                                effectsSprites.coin,
+                                (Rectangle){ drop.currentFrame * 16.0f + 2.0f, 0.0f, 13.0f, 13.0f, },
+                                (Rectangle){ (float)goldX, (float)goldY, goldSize, goldSize },
+                                (Vector2){ 0, 0 },
+                                0.0f,
+                                WHITE
+                            );
+
+                            /*
                             DrawRectangle(goldX, goldY, (int)goldSize, (int)goldSize, GOLD);
                             DrawRectangleLines(goldX, goldY, (int)goldSize, (int)goldSize, ORANGE);
+                            */
 
                             if (GAME.debugModeON)
                                 DrawCircleLines((int)drop.position.x, (int)drop.position.y,
@@ -1996,6 +2021,8 @@ int main() {
     UnloadTexture(propSprites.rock);
     UnloadTexture(propSprites.tree1);
     UnloadTexture(propSprites.tree2);
+
+    UnloadTexture(effectsSprites.coin);
 
     UnloadMusicStream(menuMusic);
     UnloadMusicStream(gameMusic);
