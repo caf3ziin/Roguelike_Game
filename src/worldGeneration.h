@@ -31,8 +31,24 @@ enum PropType { PROP_TREE, PROP_ROCK, PROP_BUSH, PROP_POND };
 struct Prop {
     PropType type = PROP_TREE;
     Vector2 position = { 0, 0 };   // canto superior esquerdo, em pixels
-    Vector2 size = { 32, 32 };     // PLACEHOLDER retangular
+    Vector2 size = { 32, 32 };     // tamanho da ARTE VISIVEL, em pixels
+    int variant = 0;               // qual arte do tipo usar (pinheiro ou tronco alto)
 };
+
+// Sprites dos props. Um tipo pode ter mais de uma arte: a geracao sorteia qual
+// usar e guarda em prop.variant, para nao sair tudo igual na tela.
+//
+// Carregue as texturas no main.cpp e entregue aqui com setPropSprites ANTES de
+// gerar o mundo: o tamanho de cada prop e tirado da proporcao do sprite.
+// Tipo sem textura carregada cai sozinho no retangulo colorido de placeholder.
+struct PropSprites {
+    Texture2D tree1;   // pinheiro: largo, galhos ate o chao
+    Texture2D tree2;   // tronco alto e fino
+    Texture2D bush;
+    Texture2D rock;
+};
+
+void setPropSprites(const PropSprites& sprites);
 
 // Tudo que o gerador precisa saber do jogo. Vem por parametro para este
 // arquivo nao depender do GAME nem do player.
@@ -54,9 +70,10 @@ void generateWorld(std::vector<Prop>& props,
                    const WorldGenConfig& config,
                    unsigned int seed);
 
-// Prop rasteiro (lago, arbusto) e chao: fica SEMPRE embaixo das entidades.
-// Prop alto (arvore, pedra) entra na ordenacao por Y junto com player e
-// inimigos, para dar para passar por tras dele.
+// Prop rasteiro (so o lago hoje) e chao: fica SEMPRE embaixo das entidades.
+// Todo o resto entra na ordenacao por Y junto com player e inimigos, para dar
+// para passar por tras. Atencao: isto e independente da colisao - o arbusto e
+// ordenado por Y (cobre o player quando ele esta atras) mas nao bloqueia nada.
 bool isGroundProp(PropType type);
 
 // Desenha so os props rasteiros que aparecem na area visivel.
